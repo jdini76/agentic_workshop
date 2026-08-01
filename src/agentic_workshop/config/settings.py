@@ -8,11 +8,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ModelSettings(BaseModel):
+    """Provider selection and connection settings consumed only at composition time."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider: str = "unconfigured"
     model: str = "unconfigured"
     api_key: SecretStr | None = None
+    endpoint: str | None = None
     timeout_seconds: float = Field(default=60.0, gt=0)
 
 
@@ -39,4 +42,3 @@ class Settings(BaseSettings):
     resource_root: Path = Path("resources")
     model: ModelSettings = ModelSettings()
     observability: ObservabilitySettings = ObservabilitySettings()
-

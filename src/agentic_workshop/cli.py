@@ -9,15 +9,21 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
+from agentic_workshop.application.content import ContentPackageError, GenerateContentPackage
 from agentic_workshop.application.marketing import (
+    CLIENT_RESOURCE_TEMPLATE,
     GenerateWeeklyMarketingBrief,
     MarketingBriefError,
 )
+from agentic_workshop.domain.clients import ClientProfile
+from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
+from agentic_workshop.presentation.content_markdown import render_content_package
 from agentic_workshop.presentation.markdown import render_weekly_marketing_brief
 
 PACKAGE_RESOURCE_ROOT = Path(__file__).parent / "resources"
 DEFAULT_ARTIFACT_ROOT = Path("artifacts") / "weekly-briefs"
+DEFAULT_CONTENT_ARTIFACT_ROOT = Path("artifacts") / "content-packages"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
     brief.add_argument("--strict", action="store_true")
     brief.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
     brief.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
+
+    content = subparsers.add_parser(
+        "content-package", help="generate channel drafts from an approved weekly brief"
+    )
+    content.add_argument("brief_file", type=Path)
+    content.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
+    content.add_argument("--artifact-root", type=Path, default=DEFAULT_CONTENT_ARTIFACT_ROOT)
 
     review = subparsers.add_parser("review", help="review an existing brief JSON file")
     review.add_argument("brief_file", type=Path)
@@ -45,8 +58,16 @@ def run(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "brief":
             return _generate(args)
+        if args.command == "content-package":
+            return _generate_content_package(args)
         return _review(args)
-    except (MarketingBriefError, OSError, ValidationError, ValueError) as error:
+    except (
+        ContentPackageError,
+        MarketingBriefError,
+        OSError,
+        ValidationError,
+        ValueError,
+    ) as error:
         parser.error(str(error))
     return 2
 
@@ -69,8 +90,8 @@ def _generate(args: argparse.Namespace) -> int:
 
 
 def _review(args: argparse.Namespace) -> int:
-    brief = WeeklyMarketingBrief.model_validate_json(args.brief_file.read_text(encoding="utf-8"))
-    data = brief.model_dump(mode="json")
+    artifact = _load_review_artifact(args.brief_file)
+    data = artifact.model_dump(mode="json")
     if args.approve:
         data.update(approval_state=BriefApprovalState.APPROVED, revision_note=None)
     else:
@@ -78,8 +99,16 @@ def _review(args: argparse.Namespace) -> int:
             approval_state=BriefApprovalState.REVISION_REQUESTED,
             revision_note=args.request_revision,
         )
-    reviewed = WeeklyMarketingBrief.model_validate(data)
-    _write_artifacts(reviewed, args.brief_file, args.brief_file.with_suffix(".md"))
+    if isinstance(artifact, WeeklyMarketingBrief):
+        reviewed_brief = WeeklyMarketingBrief.model_validate(data)
+        _write_artifacts(
+            reviewed_brief, args.brief_file, args.brief_file.with_suffix(".md")
+        )
+    else:
+        reviewed_package = ContentPackage.model_validate(data)
+        _write_content_artifacts(
+            reviewed_package, args.brief_file, args.brief_file.with_suffix(".md")
+        )
     print(args.brief_file)
     return 0
 
@@ -88,6 +117,42 @@ def _write_artifacts(brief: WeeklyMarketingBrief, json_path: Path, markdown_path
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(brief.model_dump_json(indent=2) + "\n", encoding="utf-8")
     markdown_path.write_text(render_weekly_marketing_brief(brief), encoding="utf-8")
+
+
+def _generate_content_package(args: argparse.Namespace) -> int:
+    brief = WeeklyMarketingBrief.model_validate_json(
+        args.brief_file.read_text(encoding="utf-8")
+    )
+    loader = FilesystemResourceLoader(args.resource_root)
+    client_ref = CLIENT_RESOURCE_TEMPLATE.format(client_id=brief.client_id)
+    client = ClientProfile.model_validate_json(asyncio.run(loader.load_text(client_ref)))
+    package = GenerateContentPackage().execute(
+        brief,
+        client,
+        approved_brief_source=str(args.brief_file),
+    )
+    json_path = args.artifact_root / f"{package.package_id}.json"
+    markdown_path = args.artifact_root / f"{package.package_id}.md"
+    _write_content_artifacts(package, json_path, markdown_path)
+    print(json_path)
+    print(markdown_path)
+    return 0
+
+
+def _load_review_artifact(path: Path) -> WeeklyMarketingBrief | ContentPackage:
+    raw = path.read_text(encoding="utf-8")
+    try:
+        return WeeklyMarketingBrief.model_validate_json(raw)
+    except ValidationError:
+        return ContentPackage.model_validate_json(raw)
+
+
+def _write_content_artifacts(
+    package: ContentPackage, json_path: Path, markdown_path: Path
+) -> None:
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(package.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    markdown_path.write_text(render_content_package(package), encoding="utf-8")
 
 
 if __name__ == "__main__":

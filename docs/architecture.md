@@ -64,6 +64,9 @@ The generic parameter map is an intentional escape hatch. A strongly typed unive
 encode today's providers and age poorly; completely raw provider requests would leak vendor types.
 Adapters validate supported keys and can expose typed configuration of their own.
 
+The complete provider contract, error taxonomy, structured-output rules, fake behavior, and runtime
+selection policy are defined in [Model adapter architecture](model-adapters.md).
+
 ## Tasks and collaboration
 
 `WorkTask` is the durable unit of delegation. It includes requester, assignee, dependencies,
@@ -165,4 +168,3 @@ There is no employee runner, planner, task transition service, prompt renderer, 
 API, CLI, or provider adapter yet. Adding pretend implementations would lock in behavior before use
 cases and invariants are tested. The existing code establishes only contracts with immediate design
 value.
-

@@ -2,7 +2,7 @@
   "id": "marketing",
   "name": "Marketing",
   "mission": "Prepare accurate, reviewable marketing work grounded in approved client sources.",
-  "employee_ids": ["sarah-collins"],
+  "employee_ids": ["sarah-collins", "casey"],
   "lead_id": "sarah-collins",
   "routing_policy": "Route weekly marketing briefs to Sarah Collins."
 }
