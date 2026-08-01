@@ -15,6 +15,9 @@ dependencies = [
   "pydantic-settings>=2.7,<3",
 ]
 
+[project.scripts]
+agentic-workshop = "agentic_workshop.cli:main"
+
 [project.optional-dependencies]
 dev = [
   "mypy>=1.14",
@@ -25,6 +28,12 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentic_workshop"]
+
+[tool.hatch.build]
+include = [
+  "src/agentic_workshop/**/*.py",
+  "src/agentic_workshop/resources/**/*",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"
@@ -45,4 +54,3 @@ strict = true
 packages = ["agentic_workshop"]
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
-

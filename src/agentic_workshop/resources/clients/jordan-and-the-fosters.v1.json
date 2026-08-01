@@ -1,0 +1,31 @@
+{
+  "id": "jordan-and-the-fosters",
+  "identity": "Jordan and the Fosters",
+  "summary": "A client profile awaiting author-approved book and campaign information.",
+  "mission": "Prepare accurate marketing only after the author approves the supporting information.",
+  "brand_voice": ["Not yet supplied"],
+  "audiences": [],
+  "themes": [],
+  "marketing_goals": [],
+  "calls_to_action": [],
+  "purchase_links": [],
+  "approved_facts": [],
+  "prohibited_claims": [
+    "Do not state or imply plot, character, setting, genre, or outcome details that are not approved",
+    "Do not state a reader age range until the author approves it",
+    "Do not fabricate reviews, testimonials, awards, availability, or purchase destinations",
+    "Do not use or describe cover art or illustrations until approved"
+  ],
+  "missing_information": [
+    "Author-approved synopsis",
+    "Reader age range",
+    "Author story and reason for writing the book",
+    "Official purchase link",
+    "Preferred public call to action",
+    "Approved cover and illustrations",
+    "Reviews or testimonials",
+    "Current website, mailing list, and social channels"
+  ],
+  "source_reference": "clients/jordan-and-the-fosters.v1.json",
+  "version": 1
+}

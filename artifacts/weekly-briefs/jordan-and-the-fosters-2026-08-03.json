@@ -1,0 +1,59 @@
+{
+  "client_id": "jordan-and-the-fosters",
+  "employee_id": "sarah-collins",
+  "week": "2026-08-03",
+  "objective": "Prepare the minimum approved inputs required for a public campaign",
+  "audience": "Prospective readers; audience definition pending author approval",
+  "campaign_theme": "Campaign readiness and approved-information collection",
+  "rationale": "The client profile contains unresolved source gaps. This brief therefore limits work to internal campaign preparation and requests approval before public use.",
+  "source_references": [
+    "employees/sarah-collins.v1.json",
+    "clients/jordan-and-the-fosters.v1.json",
+    "prompts/sarah-weekly-marketing.v1.md",
+    "sops/weekly-marketing-brief.v1.md"
+  ],
+  "recommended_channels": [
+    "Internal author review"
+  ],
+  "content_assignments": [
+    {
+      "owner_id": "sarah-collins",
+      "deliverable": "Author information request",
+      "channel": "Internal author review",
+      "instructions": "Request every item listed under missing inputs; record responses in a new version of the client profile before drafting public copy."
+    },
+    {
+      "owner_id": "sarah-collins",
+      "deliverable": "Approved-claims ledger",
+      "channel": "Internal planning",
+      "instructions": "Map each future campaign statement to an approved fact and its source. Do not draft claims that lack approval."
+    }
+  ],
+  "call_to_action": "No public call to action until the author approves one",
+  "success_metrics": [
+    {
+      "name": "Missing inputs resolved",
+      "target": "Resolve 8 of 8 tracked items"
+    },
+    {
+      "name": "Unsupported public claims",
+      "target": "0"
+    }
+  ],
+  "assumptions": [
+    "No public content will be published from this brief.",
+    "Only facts in approved_facts may support future marketing claims."
+  ],
+  "missing_inputs": [
+    "Author-approved synopsis",
+    "Reader age range",
+    "Author story and reason for writing the book",
+    "Official purchase link",
+    "Preferred public call to action",
+    "Approved cover and illustrations",
+    "Reviews or testimonials",
+    "Current website, mailing list, and social channels"
+  ],
+  "approval_state": "draft",
+  "revision_note": null
+}

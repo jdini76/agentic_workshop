@@ -1,0 +1,8 @@
+{
+  "id": "agentic-workshop-demo",
+  "name": "Agentic Workshop Demo Company",
+  "mission": "Deliver governed, source-grounded work through accountable AI employees.",
+  "department_ids": ["marketing"],
+  "executive_employee_ids": [],
+  "policy_resource": "policies/company.v1.md"
+}

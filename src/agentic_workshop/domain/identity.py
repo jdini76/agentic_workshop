@@ -7,6 +7,7 @@ from pydantic import StringConstraints
 from agentic_workshop.domain.base import DomainModel
 
 CompanyId = NewType("CompanyId", str)
+ClientId = NewType("ClientId", str)
 DepartmentId = NewType("DepartmentId", str)
 EmployeeId = NewType("EmployeeId", str)
 TaskId = NewType("TaskId", str)
