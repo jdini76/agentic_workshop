@@ -158,13 +158,16 @@ class GenerateWeeklyMarketingBrief:
                     deliverable="Official website campaign feature",
                     channel="Official website",
                     instructions=(
-                        "Create concise text-only website copy introducing Jordan\u2019s journey, "
+                        "Use the exact heading \u201cA Story of Kindness, Courage, and "
+                        "Belonging.\u201d Create concise text-only website copy introducing "
+                        "Jordan\u2019s journey, "
                         "the intended family audience, and the book\u2019s central themes. End "
                         "with "
                         "the "
                         f"approved Amazon CTA and canonical purchase link ({purchase_url}). The "
                         "approved review excerpt may be included exactly once with its required "
-                        "attribution. Do not add or select an image."
+                        "attribution. State that Jordan and the Fosters is available in paperback, "
+                        "hardcover, and digital editions. Do not add or select an image."
                     ),
                 ),
                 ContentAssignment(
@@ -176,8 +179,8 @@ class GenerateWeeklyMarketingBrief:
                         "Lead with a relatable question or observation about helping children "
                         "understand patience and kindness toward cautious animals. Connect it to "
                         "Jordan\u2019s journey and end with an approved "
-                        "CTA. Do not invent a social "
-                        "platform, image, hashtag, or character limit."
+                        "CTA. Keep the public copy between 100 and 140 words. Do not invent a "
+                        "social platform, image, hashtag, or character limit."
                     ),
                 ),
             ),

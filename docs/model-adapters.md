@@ -102,19 +102,23 @@ into a retryable provider failure.
 
 ## Configuration and secrets
 
-`ModelSettings` contains non-secret connection settings only. The OpenAI adapter reads its
-credential directly and exclusively from the process environment at explicit construction time:
+`ModelSettings` contains non-secret connection settings only. At explicit construction time, the
+OpenAI adapter first checks the operating-system environment and then an optional repository-root
+`.env` file used for local development:
 
 ```text
 OPENAI_API_KEY=<injected-by-the-process-or-secret-manager>
+OPENAI_MODEL=gpt-5.6-terra
 ```
 
-The OpenAI credential is never accepted by CLI flags or configuration models and is not retained by
-application objects. If it is absent, adapter construction fails before a client request. A local
+Operating-system values take precedence over `.env`. The OpenAI credential is never accepted by CLI
+flags or configuration models and is not retained by application objects. If it is absent, empty,
+or an obvious placeholder, adapter construction fails before a client request. A local
 Ollama adapter normally uses no key and receives an explicitly configured trusted endpoint. Secrets
 must never enter domain models, prompts, events, artifacts, metadata, exceptions, fixtures, snapshots,
-or logs. `.env` and common credential files are Git-ignored, but this project does not load the OpenAI
-credential from `.env`.
+or logs. `.env` and `.env.*` are Git-ignored except for the empty `.env.example` template. Tests
+disable repository discovery or provide an isolated temporary file, so they cannot consume a
+developer credential.
 
 Adapter-specific configuration should use typed, immutable settings owned by that adapter. Unknown
 settings are rejected. Provider environment-variable conventions may be supported by the composition

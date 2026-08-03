@@ -33,7 +33,6 @@ DEFAULT_ARTIFACT_ROOT = Path("artifacts") / "weekly-briefs"
 DEFAULT_CONTENT_ARTIFACT_ROOT = Path("artifacts") / "content-packages"
 DEFAULT_MODEL_ARTIFACT_ROOT = Path("artifacts") / "model-content-packages"
 DEFAULT_LIVE_SMOKE_ARTIFACT_ROOT = Path("artifacts") / "live-smoke" / "openai"
-DEFAULT_OPENAI_MODEL = "gpt-5.6-sol"
 CASEY_PROMPT_RESOURCE = "prompts/casey-content-creator.v1.md"
 
 
@@ -185,7 +184,11 @@ def _add_model_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_openai_settings(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model", default=DEFAULT_OPENAI_MODEL)
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="model override (otherwise OPENAI_MODEL or gpt-5.6-terra)",
+    )
     parser.add_argument("--timeout-seconds", type=float, default=60.0)
     parser.add_argument(
         "--reasoning-effort",

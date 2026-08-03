@@ -3,10 +3,12 @@
 import json
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from time import perf_counter
 from typing import Any, Protocol, cast
 
 import openai
+from dotenv import dotenv_values
 from openai import AsyncOpenAI
 
 from agentic_workshop.ports.models import (
@@ -21,7 +23,17 @@ from agentic_workshop.ports.models import (
     ModelUnavailableError,
 )
 
-OPENAI_PROVIDER = "openai"
+OPENAI_PROVIDER = os.getenv("OPENAI_PROVIDER", "openai")
+DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
+REJECTED_KEY_VALUES = frozenset(
+    {
+        "changeme",
+        "placeholder",
+        "replace-me",
+        "your-api-key",
+        "your_api_key",
+    }
+)
 
 
 class ResponsesResource(Protocol):
@@ -52,17 +64,26 @@ class OpenAILanguageModel(LanguageModel):
     def from_environment(
         cls,
         *,
-        model: str,
+        model: str | None,
         timeout_seconds: float,
         reasoning_effort: str,
         max_output_tokens: int,
+        load_dotenv: bool = True,
+        env_file: Path | None = None,
     ) -> "OpenAILanguageModel":
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
+        local_values = cls._local_environment(env_file) if load_dotenv else {}
+        api_key = cls._environment_value("OPENAI_API_KEY", local_values)
+        if cls._invalid_api_key(api_key):
             raise ModelAuthenticationError(
-                "OPENAI_API_KEY is not set; no OpenAI request was made",
+                "OPENAI_API_KEY is absent, empty, or a placeholder; no OpenAI request was made",
                 provider=OPENAI_PROVIDER,
             )
+        assert api_key is not None
+        selected_model = (
+            model
+            or cls._environment_value("OPENAI_MODEL", local_values)
+            or DEFAULT_OPENAI_MODEL
+        )
         client = AsyncOpenAI(
             api_key=api_key,
             timeout=timeout_seconds,
@@ -70,9 +91,45 @@ class OpenAILanguageModel(LanguageModel):
         )
         return cls(
             cast(OpenAIClient, client),
-            model=model,
+            model=selected_model,
             reasoning_effort=reasoning_effort,
             max_output_tokens=max_output_tokens,
+        )
+
+    @staticmethod
+    def _local_environment(env_file: Path | None) -> dict[str, str | None]:
+        path = env_file or OpenAILanguageModel._repository_env_file(Path.cwd())
+        if not path.is_file():
+            return {}
+        return dict(dotenv_values(path))
+
+    @staticmethod
+    def _repository_env_file(start: Path) -> Path:
+        resolved = start.resolve()
+        for directory in (resolved, *resolved.parents):
+            if (directory / "pyproject.toml").is_file():
+                return directory / ".env"
+        return resolved / ".env"
+
+    @staticmethod
+    def _environment_value(
+        name: str, local_values: dict[str, str | None]
+    ) -> str | None:
+        if name in os.environ:
+            return os.environ[name]
+        return local_values.get(name)
+
+    @staticmethod
+    def _invalid_api_key(value: str | None) -> bool:
+        if value is None or not value.strip():
+            return True
+        normalized = value.strip().lower()
+        return (
+            normalized in REJECTED_KEY_VALUES
+            or "placeholder" in normalized
+            or "your_api_key" in normalized
+            or "your-api-key" in normalized
+            or (normalized.startswith("<") and normalized.endswith(">"))
         )
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
@@ -210,4 +267,3 @@ class OpenAILanguageModel(LanguageModel):
             return float(value)
         except ValueError:
             return None
-

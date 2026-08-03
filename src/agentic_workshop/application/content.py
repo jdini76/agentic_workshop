@@ -64,7 +64,12 @@ class GenerateContentPackage:
             missing_information=missing,
             required_assets=assets,
         )
-        self._validate_drafts(generation.drafts, brief, client, sources)
+        self._validate_drafts(
+            generation.drafts,
+            brief,
+            client,
+            (client.source_reference, approved_brief_source),
+        )
 
         return ContentPackage(
             package_id=f"{client.id}-{brief.week.isoformat()}-content",

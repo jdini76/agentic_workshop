@@ -111,10 +111,25 @@ The official OpenAI Python SDK and Responses API are available behind the provid
 `LanguageModel` port. Deterministic generation remains the default. OpenAI must be selected
 explicitly and every paid request requires `--confirm-paid-call`.
 
-Set `OPENAI_API_KEY` in the calling process or a production secret manager. Never put the key in a
-CLI argument, `.env`, repository file, artifact, prompt, fixture, or snapshot. If the variable is
-absent, the command fails before making a request. `.env` and common credential filenames are
-Git-ignored.
+For local development, copy the tracked template and add the credential only to the ignored file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edit `.env` locally:
+
+```dotenv
+OPENAI_API_KEY=<your local key>
+OPENAI_MODEL=gpt-5.6-terra
+```
+
+Do not commit or share `.env`. The repository-root file is loaded only when OpenAI is explicitly
+selected. An operating-system `OPENAI_API_KEY` or `OPENAI_MODEL` overrides the corresponding `.env`
+value. Production deployments should use operating-system environment injection or a secret manager.
+The key is never accepted in a CLI argument or written to an artifact, prompt, fixture, snapshot, or
+log. Empty and obvious placeholder values fail before making a request. `.env` and `.env.*` are
+Git-ignored except for `.env.example`.
 
 The explicitly named smoke test writes a new draft package under
 `artifacts/live-smoke/openai/`; it cannot overwrite the deterministic baseline:
