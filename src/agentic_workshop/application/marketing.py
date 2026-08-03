@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from agentic_workshop.domain.base import DomainModel
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.employee import Employee
+from agentic_workshop.domain.identity import EmployeeId
 from agentic_workshop.domain.marketing import (
     ContentAssignment,
     SuccessMetric,
@@ -76,25 +77,158 @@ class GenerateWeeklyMarketingBrief:
             if client.audiences
             else "Prospective readers; audience definition pending author approval"
         )
-        campaign_theme = (
-            client.themes[0]
-            if client.themes
-            else "Campaign readiness and approved-information collection"
-        )
-        channel_information_missing = any(
-            "website" in item.lower()
-            or "mailing list" in item.lower()
-            or "social channels" in item.lower()
-            for item in client.missing_information
-        )
-        public_channels = (
-            () if channel_information_missing else ("Website", "Mailing list", "Social media")
-        )
-        recommended_channels = public_channels or ("Internal author review",)
         call_to_action = (
             client.calls_to_action[0]
             if client.calls_to_action
             else "No public call to action until the author approves one"
+        )
+
+        if client.is_complete and client.public_channels:
+            return self._public_brief(
+                employee,
+                client,
+                week,
+                call_to_action,
+                unique_sources,
+            )
+
+        return self._readiness_brief(
+            employee,
+            client,
+            week,
+            audience,
+            call_to_action,
+            unique_sources,
+        )
+
+    @staticmethod
+    def _public_brief(
+        employee: Employee,
+        client: ClientProfile,
+        week: date,
+        call_to_action: str,
+        sources: tuple[str, ...],
+    ) -> WeeklyMarketingBrief:
+        channels = tuple(
+            f"Official {channel.kind}" if channel.is_central_hub else channel.label
+            for channel in client.public_channels
+        )
+        has_linked_social_channels = any(
+            "social" in use.lower()
+            for channel in client.public_channels
+            for use in channel.approved_uses
+        )
+        if has_linked_social_channels:
+            channels = (*channels, "Social channels linked from the official website")
+        deferred = client.deferred_information
+        purchase_url = (
+            client.purchase_links[0].url
+            if client.purchase_links
+            else "No approved purchase link"
+        )
+
+        return WeeklyMarketingBrief(
+            client_id=client.id,
+            employee_id=employee.id,
+            week=week,
+            objective=(
+                "Introduce Jordan and the Fosters to parents and caregivers of children ages "
+                "3\N{EN DASH}8, build interest in its themes, and encourage qualified visitors "
+                "to view "
+                "the available editions on Amazon."
+            ),
+            audience=(
+                "Parents and caregivers of children ages 3\N{EN DASH}8 who value warm animal "
+                "stories and "
+                "want age-appropriate ways to discuss kindness, patience, trust, and belonging."
+            ),
+            campaign_theme=(
+                "How patience and kindness help a cautious dog discover trust and belonging."
+            ),
+            rationale=(
+                "The client profile has approved story facts, audiences, brand voice, calls to "
+                "action, purchase and website links, an author story, and a sourced review. "
+                "Visual assets remain deferred, so this campaign is text-only."
+            ),
+            source_references=sources,
+            recommended_channels=tuple(dict.fromkeys(channels)),
+            content_assignments=(
+                ContentAssignment(
+                    owner_id=EmployeeId("casey"),
+                    deliverable="Official website campaign feature",
+                    channel="Official website",
+                    instructions=(
+                        "Create concise text-only website copy introducing Jordan\u2019s journey, "
+                        "the intended family audience, and the book\u2019s central themes. End "
+                        "with "
+                        "the "
+                        f"approved Amazon CTA and canonical purchase link ({purchase_url}). The "
+                        "approved review excerpt may be included exactly once with its required "
+                        "attribution. Do not add or select an image."
+                    ),
+                ),
+                ContentAssignment(
+                    owner_id=EmployeeId("casey"),
+                    deliverable="Social awareness post",
+                    channel="Social channels linked from the official website",
+                    instructions=(
+                        "Create one text-only post aimed specifically at parents and caregivers. "
+                        "Lead with a relatable question or observation about helping children "
+                        "understand patience and kindness toward cautious animals. Connect it to "
+                        "Jordan\u2019s journey and end with an approved "
+                        "CTA. Do not invent a social "
+                        "platform, image, hashtag, or character limit."
+                    ),
+                ),
+            ),
+            call_to_action=call_to_action,
+            success_metrics=(
+                SuccessMetric(
+                    name="CEO draft approval",
+                    target="Both drafts approved as accurate and on-brand",
+                ),
+                SuccessMetric(
+                    name="Unsupported claims or unapproved assets",
+                    target="0",
+                ),
+                SuccessMetric(
+                    name="Amazon destination engagement",
+                    target="Trackable visits or clicks once channel analytics are available",
+                ),
+                SuccessMetric(
+                    name="Meaningful audience responses",
+                    target=(
+                        "Comments or responses related to kindness, trust, fostering, or reading "
+                        "with children, once published"
+                    ),
+                ),
+            ),
+            assumptions=(
+                "No public content will be published from this brief.",
+                "Only approved client facts, quotations, links, and calls to action may be used.",
+                "The campaign remains text-only until local visual assets receive CEO approval.",
+                (
+                    "Teachers, librarians, rescue organizations, and foster families remain "
+                    "approved audiences reserved for future campaigns."
+                ),
+                "Analytics-dependent measures remain pending until analytics are available.",
+            ),
+            missing_inputs=deferred,
+        )
+
+    @staticmethod
+    def _readiness_brief(
+        employee: Employee,
+        client: ClientProfile,
+        week: date,
+        audience: str,
+        call_to_action: str,
+        sources: tuple[str, ...],
+    ) -> WeeklyMarketingBrief:
+        campaign_theme = (
+            client.themes[0]
+            if client.themes
+            else "Campaign readiness and approved-information collection"
         )
 
         return WeeklyMarketingBrief(
@@ -112,8 +246,8 @@ class GenerateWeeklyMarketingBrief:
                 "The client profile contains unresolved source gaps. This brief therefore limits "
                 "work to internal campaign preparation and requests approval before public use."
             ),
-            source_references=unique_sources,
-            recommended_channels=recommended_channels,
+            source_references=sources,
+            recommended_channels=("Internal author review",),
             content_assignments=(
                 ContentAssignment(
                     owner_id=employee.id,

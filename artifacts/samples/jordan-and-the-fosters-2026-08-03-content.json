@@ -1,0 +1,97 @@
+{
+  "package_id": "jordan-and-the-fosters-2026-08-03-content",
+  "client_id": "jordan-and-the-fosters",
+  "employee_id": "casey",
+  "week": "2026-08-03",
+  "approved_brief_source": "artifacts\\samples\\jordan-and-the-fosters-2026-08-03-approved-brief.json",
+  "client_profile_source": "clients/jordan-and-the-fosters.v1.json",
+  "brand_voice": [
+    "Not yet supplied"
+  ],
+  "drafts": [
+    {
+      "assignment": "Author information request",
+      "channel": "Internal author review",
+      "title": "Information request for Jordan and the Fosters",
+      "body": "Please review the following information needed for Jordan and the Fosters:\n\n- Author-approved synopsis\n- Reader age range\n- Author story and reason for writing the book\n- Official purchase link\n- Preferred public call to action\n- Approved cover and illustrations\n- Reviews or testimonials\n- Current website, mailing list, and social channels\n\nPlease explicitly approve each response before it is added to the client profile.",
+      "state": "draft",
+      "brand_voice_applied": [
+        "Not yet supplied"
+      ],
+      "approved_facts_used": [],
+      "source_references": [
+        "employees/sarah-collins.v1.json",
+        "clients/jordan-and-the-fosters.v1.json",
+        "prompts/sarah-weekly-marketing.v1.md",
+        "sops/weekly-marketing-brief.v1.md",
+        "artifacts\\samples\\jordan-and-the-fosters-2026-08-03-approved-brief.json"
+      ],
+      "missing_assets_or_information": [
+        "Author-approved synopsis",
+        "Reader age range",
+        "Author story and reason for writing the book",
+        "Official purchase link",
+        "Preferred public call to action",
+        "Approved cover and illustrations",
+        "Reviews or testimonials",
+        "Current website, mailing list, and social channels",
+        "Approved brand voice"
+      ],
+      "required_assets": [
+        "Approved cover and illustrations"
+      ]
+    },
+    {
+      "assignment": "Approved-claims ledger",
+      "channel": "Internal planning",
+      "title": "Approved-claims ledger for Jordan and the Fosters",
+      "body": "Approved facts\n- No factual marketing claims are currently approved.\n\nRestrictions\n- PROHIBITED: Do not state or imply plot, character, setting, genre, or outcome details that are not approved\n- PROHIBITED: Do not state a reader age range until the author approves it\n- PROHIBITED: Do not fabricate reviews, testimonials, awards, availability, or purchase destinations\n- PROHIBITED: Do not use or describe cover art or illustrations until approved",
+      "state": "draft",
+      "brand_voice_applied": [
+        "Not yet supplied"
+      ],
+      "approved_facts_used": [],
+      "source_references": [
+        "employees/sarah-collins.v1.json",
+        "clients/jordan-and-the-fosters.v1.json",
+        "prompts/sarah-weekly-marketing.v1.md",
+        "sops/weekly-marketing-brief.v1.md",
+        "artifacts\\samples\\jordan-and-the-fosters-2026-08-03-approved-brief.json"
+      ],
+      "missing_assets_or_information": [
+        "Author-approved synopsis",
+        "Reader age range",
+        "Author story and reason for writing the book",
+        "Official purchase link",
+        "Preferred public call to action",
+        "Approved cover and illustrations",
+        "Reviews or testimonials",
+        "Current website, mailing list, and social channels",
+        "Approved brand voice"
+      ],
+      "required_assets": [
+        "Approved cover and illustrations"
+      ]
+    }
+  ],
+  "assumptions": [
+    "This package is a draft and will not be published automatically.",
+    "Only client_profile.approved_facts are available as factual claims."
+  ],
+  "missing_assets_or_information": [
+    "Author-approved synopsis",
+    "Reader age range",
+    "Author story and reason for writing the book",
+    "Official purchase link",
+    "Preferred public call to action",
+    "Approved cover and illustrations",
+    "Reviews or testimonials",
+    "Current website, mailing list, and social channels",
+    "Approved brand voice"
+  ],
+  "required_assets": [
+    "Approved cover and illustrations"
+  ],
+  "approval_state": "draft",
+  "revision_note": null
+}

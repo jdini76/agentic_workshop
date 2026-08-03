@@ -17,6 +17,7 @@ from agentic_workshop.application.marketing import (
 from agentic_workshop.cli import PACKAGE_RESOURCE_ROOT, run
 from agentic_workshop.domain.identity import ClientId, EmployeeId
 from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
+from agentic_workshop.ports.resources import ResourceLoader
 
 
 def generate_brief(requested_date: date = date(2026, 8, 3)) -> WeeklyMarketingBrief:
@@ -36,7 +37,18 @@ def test_successful_draft_generation_is_schema_valid() -> None:
     assert brief.approval_state is BriefApprovalState.DRAFT
     assert brief.missing_inputs
     assert "No public content will be published from this brief." in brief.assumptions
-    assert brief.recommended_channels == ("Internal author review",)
+    assert "Official website" in brief.recommended_channels
+    assert "Social channels linked from the official website" in brief.recommended_channels
+    assert brief.audience.startswith(
+        "Parents and caregivers of children ages 3\N{EN DASH}8"
+    )
+    assert brief.campaign_theme == (
+        "How patience and kindness help a cautious dog discover trust and belonging."
+    )
+    assert "Teachers" not in brief.audience
+    assert {assignment.owner_id for assignment in brief.content_assignments} == {
+        EmployeeId("casey")
+    }
 
 
 def test_requested_date_is_normalized_to_monday() -> None:
@@ -54,8 +66,21 @@ def test_brief_preserves_governing_source_references() -> None:
     assert "sops/weekly-marketing-brief.v1.md" in brief.source_references
 
 
+class IncompleteProfileLoader(ResourceLoader):
+    def __init__(self) -> None:
+        self._delegate = FilesystemResourceLoader(PACKAGE_RESOURCE_ROOT)
+
+    async def load_text(self, resource_ref: str) -> str:
+        raw = await self._delegate.load_text(resource_ref)
+        if resource_ref != "clients/jordan-and-the-fosters.v1.json":
+            return raw
+        profile = json.loads(raw)
+        profile["missing_information"] = ["Required test information"]
+        return json.dumps(profile)
+
+
 def test_strict_mode_rejects_incomplete_profile() -> None:
-    loader = FilesystemResourceLoader(PACKAGE_RESOURCE_ROOT)
+    loader = IncompleteProfileLoader()
 
     with pytest.raises(IncompleteClientProfileError) as raised:
         asyncio.run(
@@ -64,7 +89,7 @@ def test_strict_mode_rejects_incomplete_profile() -> None:
             )
         )
 
-    assert "Author-approved synopsis" in raised.value.missing_information
+    assert raised.value.missing_information == ("Required test information",)
 
 
 def test_filesystem_loader_rejects_path_traversal(tmp_path: Path) -> None:
@@ -134,13 +159,14 @@ def test_generated_json_contains_no_unapproved_book_facts(tmp_path: Path) -> Non
     )
 
     assert payload["missing_inputs"] == [
-        "Author-approved synopsis",
-        "Reader age range",
-        "Author story and reason for writing the book",
-        "Official purchase link",
-        "Preferred public call to action",
-        "Approved cover and illustrations",
-        "Reviews or testimonials",
-        "Current website, mailing list, and social channels",
+        "Approved cover and illustrations — deferred; channel-dependent and required for "
+        "image-based campaigns, but not a blocker for text-only campaigns"
     ]
-
+    assert payload["approval_state"] == "draft"
+    assert payload["call_to_action"].endswith(
+        "Choose your edition of Jordan and the Fosters on Amazon."
+    )
+    assert payload["recommended_channels"] == [
+        "Official website",
+        "Social channels linked from the official website",
+    ]

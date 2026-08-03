@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,7 +14,6 @@ class ModelSettings(BaseModel):
 
     provider: str = "unconfigured"
     model: str = "unconfigured"
-    api_key: SecretStr | None = None
     endpoint: str | None = None
     timeout_seconds: float = Field(default=60.0, gt=0)
 

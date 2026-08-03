@@ -14,16 +14,17 @@ That claim follows from two boundaries:
    inside adapter modules. Adapters translate to and from the normalized contracts in
    `ports/models.py`.
 
-Expected adapters can therefore be packaged independently:
+Adapters remain independently packaged; the first implementation is now:
 
 ```text
-adapters/models/openai.py     -> OpenAI SDK or HTTP API
+adapters/openai_language_model.py -> official OpenAI SDK and Responses API
 adapters/models/anthropic.py  -> Anthropic SDK or HTTP API
 adapters/models/gemini.py     -> Google Gen AI SDK or HTTP API
 adapters/models/ollama.py     -> local Ollama HTTP API
 ```
 
-None exists yet. No provider SDK is a core dependency.
+The OpenAI adapter exists. The other adapters remain future work and require no employee or
+deliverable changes.
 
 ## Provider-neutral request contract
 
@@ -88,6 +89,7 @@ Adapters translate SDK and HTTP failures into the following port exceptions:
 | `ModelAuthenticationError` | Credentials are missing, invalid, expired, or unauthorized. | Do not retry until configuration changes. |
 | `ModelRateLimitError` | A request, token, concurrency, or account quota prevented service. | Honor `retry_after_seconds` when present and apply bounded backoff. |
 | `ModelMalformedOutputError` | Output could not be parsed or did not satisfy the requested schema. | Do not retry blindly; an explicit bounded regeneration policy may retry. |
+| `ModelUnavailableError` | The selected model is absent or unavailable to the account. | Select an available configured model; do not silently fall back. |
 | `LanguageModelError` | Sanitized base for other provider failures. | The concrete adapter documents whether a subtype is retryable. |
 
 Errors expose a provider identifier for observability but never include API keys, authorization
@@ -100,23 +102,19 @@ into a retryable provider failure.
 
 ## Configuration and secrets
 
-`ModelSettings` supplies a provider key, model identifier, optional endpoint, optional `SecretStr`
-API key, and positive timeout. Environment variables use the existing nested convention:
+`ModelSettings` contains non-secret connection settings only. The OpenAI adapter reads its
+credential directly and exclusively from the process environment at explicit construction time:
 
 ```text
-AW_MODEL__PROVIDER=openai
-AW_MODEL__MODEL=<configured-model-name>
-AW_MODEL__API_KEY=<secret>
-AW_MODEL__ENDPOINT=<optional-provider-or-local-endpoint>
-AW_MODEL__TIMEOUT_SECONDS=60
+OPENAI_API_KEY=<injected-by-the-process-or-secret-manager>
 ```
 
-OpenAI, Anthropic, and Gemini adapters may require an API key. A local Ollama adapter normally uses
-no key and receives an explicitly configured loopback or trusted endpoint. Secrets enter only at the
-composition root, are passed directly to adapter constructors, and use `SecretStr` to reduce
-accidental display. Production deployments should inject them from their secret manager rather than
-commit `.env` files. Secrets must never enter domain models, prompts, events, artifacts, metadata, or
-logs.
+The OpenAI credential is never accepted by CLI flags or configuration models and is not retained by
+application objects. If it is absent, adapter construction fails before a client request. A local
+Ollama adapter normally uses no key and receives an explicitly configured trusted endpoint. Secrets
+must never enter domain models, prompts, events, artifacts, metadata, exceptions, fixtures, snapshots,
+or logs. `.env` and common credential files are Git-ignored, but this project does not load the OpenAI
+credential from `.env`.
 
 Adapter-specific configuration should use typed, immutable settings owned by that adapter. Unknown
 settings are rejected. Provider environment-variable conventions may be supported by the composition
@@ -141,9 +139,11 @@ integration tests must be opt-in, credential-gated, budget-limited, and excluded
 
 ## Runtime adapter selection
 
-Selection occurs only in the composition root. A typed factory reads `Settings.model.provider` and
-constructs exactly one `LanguageModel` implementation, injecting its model identifier, endpoint,
-secret, timeout, HTTP transport, and observability hooks. A conceptual registry is sufficient:
+Selection occurs only in the CLI composition root. Deterministic drafting is the default; OpenAI is
+selected only with `--generator openai` or the explicitly named live-smoke command. Both routes also
+require `--confirm-paid-call`. The CLI constructs `OpenAILanguageModel` and injects it into
+`ModelContentDraftGenerator`; Sarah, Casey, and deliverable models remain unchanged. A broader future
+registry can add:
 
 ```text
 "openai"    -> OpenAIModelAdapter
@@ -162,4 +162,3 @@ This explicit factory is preferred over provider discovery by imports or a depen
 framework: it makes installed optional dependencies, secret requirements, and the selected billing
 boundary obvious. Provider packages may later be optional extras so an Ollama-only installation does
 not install paid-provider SDKs.
-

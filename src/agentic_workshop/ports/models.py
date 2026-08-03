@@ -69,6 +69,10 @@ class ModelMalformedOutputError(LanguageModelError):
     """The provider returned output that could not satisfy the requested contract."""
 
 
+class ModelUnavailableError(LanguageModelError):
+    """The selected model does not exist or is unavailable to the authenticated account."""
+
+
 class LanguageModel(ABC):
     """Async inference port implemented independently by each provider adapter."""
 

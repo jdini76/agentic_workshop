@@ -4,21 +4,31 @@ from pathlib import Path
 
 import pytest
 
+from agentic_workshop.adapters.deterministic_content import (
+    DeterministicContentDraftGenerator,
+)
 from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
 from agentic_workshop.application.content import (
     GenerateContentPackage,
+    InvalidGeneratedDraftsError,
     UnapprovedMarketingBriefError,
 )
 from agentic_workshop.application.marketing import GenerateWeeklyMarketingBrief
 from agentic_workshop.cli import PACKAGE_RESOURCE_ROOT, run
 from agentic_workshop.domain.clients import ClientProfile
-from agentic_workshop.domain.content import ContentPackage
+from agentic_workshop.domain.content import (
+    ContentDraft,
+    ContentGenerationMetadata,
+    ContentPackage,
+    DraftGenerationResult,
+)
 from agentic_workshop.domain.employee import Employee
 from agentic_workshop.domain.marketing import (
     BriefApprovalState,
     ContentAssignment,
     WeeklyMarketingBrief,
 )
+from agentic_workshop.ports.content_generation import ContentDraftGenerator
 
 
 def load_inputs() -> tuple[WeeklyMarketingBrief, ClientProfile]:
@@ -40,6 +50,19 @@ def approve(brief: WeeklyMarketingBrief) -> WeeklyMarketingBrief:
     return WeeklyMarketingBrief.model_validate(data)
 
 
+def generate_package(
+    brief: WeeklyMarketingBrief,
+    client: ClientProfile,
+    *,
+    source: str = "approved-brief.json",
+) -> ContentPackage:
+    return asyncio.run(
+        GenerateContentPackage(DeterministicContentDraftGenerator()).execute(
+            brief, client, approved_brief_source=source
+        )
+    )
+
+
 def test_casey_employee_resource_is_valid() -> None:
     loader = FilesystemResourceLoader(PACKAGE_RESOURCE_ROOT)
     casey = Employee.model_validate_json(
@@ -54,16 +77,12 @@ def test_unapproved_brief_is_rejected() -> None:
     brief, client = load_inputs()
 
     with pytest.raises(UnapprovedMarketingBriefError):
-        GenerateContentPackage().execute(
-            brief, client, approved_brief_source="brief.json"
-        )
+        generate_package(brief, client, source="brief.json")
 
 
 def test_approved_brief_creates_source_grounded_draft_package() -> None:
     brief, client = load_inputs()
-    package = GenerateContentPackage().execute(
-        approve(brief), client, approved_brief_source="approved-brief.json"
-    )
+    package = generate_package(approve(brief), client)
 
     assert package.approval_state is BriefApprovalState.DRAFT
     assert package.employee_id == "casey"
@@ -71,9 +90,37 @@ def test_approved_brief_creates_source_grounded_draft_package() -> None:
     assert len({draft.body for draft in package.drafts}) == len(package.drafts)
     assert all("approved-brief.json" in draft.source_references for draft in package.drafts)
     assert all(draft.brand_voice_applied == client.brand_voice for draft in package.drafts)
+    assert all(draft.state == "draft" for draft in package.drafts)
+    assert all(draft.approved_facts_used for draft in package.drafts)
+    assert all(
+        set(draft.approved_facts_used).issubset(client.approved_facts)
+        for draft in package.drafts
+    )
     assert all(draft.missing_assets_or_information for draft in package.drafts)
-    assert "Approved brand voice" in package.missing_assets_or_information
+    assert "Approved brand voice" not in package.missing_assets_or_information
+    assert any(
+        asset.startswith("Approved cover and illustrations")
+        for asset in package.required_assets
+    )
     assert "publish" in package.assumptions[0].lower()
+    website, social = package.drafts
+    assert website.title == "A Story of Kindness, Courage, and Belonging."
+    assert "https://www.amazon.com/gp/aw/d/B0D5BT1XDZ" in website.body
+    assert website.body.count("https://www.amazon.com/gp/aw/d/B0D5BT1XDZ") == 1
+    assert website.body.count("Choose your edition") == 1
+    assert "approved reader age range" not in website.body.lower()
+    assert "canonical" not in website.body.lower()
+    assert '"Joe Dinicola tells a tale' in website.body
+    assert "Constance Stadler, Readers\u2019 Favorite" in website.body
+    assert any(
+        "readersfavorite.com/book-review" in source
+        for source in website.source_references
+    )
+    assert social.body.startswith("How can we help children understand")
+    assert 100 <= len(social.body.split()) <= 140
+    assert social.body.count("https://www.amazon.com/gp/aw/d/B0D5BT1XDZ") == 1
+    assert social.body.count("Choose your edition") == 1
+    assert "#" not in social.body
 
 
 def test_channel_drafts_adapt_copy_without_inventing_facts() -> None:
@@ -107,16 +154,56 @@ def test_channel_drafts_adapt_copy_without_inventing_facts() -> None:
     )
     channel_brief = WeeklyMarketingBrief.model_validate(brief_data)
 
-    package = GenerateContentPackage().execute(
-        channel_brief, approved_client, approved_brief_source="approved.json"
-    )
+    package = generate_package(channel_brief, approved_client, source="approved.json")
 
     social, email = package.drafts
     assert social.body != email.body
-    assert social.body.startswith("Jordan and the Fosters is the approved title.")
+    assert social.body.startswith("How can we help children understand")
     assert email.body.startswith("Hello,")
     assert "Learn more" in social.body and "Learn more" in email.body
     assert social.brand_voice_applied == ("Warm", "Direct")
+    assert social.approved_facts_used == approved_client.approved_facts
+
+
+class InvalidSourceGenerator(ContentDraftGenerator):
+    async def generate(
+        self,
+        brief: WeeklyMarketingBrief,
+        client: ClientProfile,
+        *,
+        source_references: tuple[str, ...],
+        missing_information: tuple[str, ...],
+        required_assets: tuple[str, ...],
+    ) -> DraftGenerationResult:
+        drafts = tuple(
+            ContentDraft(
+                assignment=assignment.deliverable,
+                channel=assignment.channel,
+                title="Invalid source draft",
+                body="No claims.",
+                brand_voice_applied=client.brand_voice,
+                approved_facts_used=(),
+                source_references=("untrusted.json",),
+                missing_assets_or_information=missing_information,
+                required_assets=required_assets,
+            )
+            for assignment in brief.content_assignments
+        )
+        return DraftGenerationResult(
+            drafts=drafts,
+            metadata=ContentGenerationMetadata(generator="invalid-test"),
+        )
+
+
+def test_generator_output_requires_complete_approved_sources() -> None:
+    brief, client = load_inputs()
+
+    with pytest.raises(InvalidGeneratedDraftsError, match="cite the approved brief"):
+        asyncio.run(
+            GenerateContentPackage(InvalidSourceGenerator()).execute(
+                approve(brief), client, approved_brief_source="approved.json"
+            )
+        )
 
 
 def test_cli_rejects_draft_and_writes_then_reviews_approved_package(
@@ -161,4 +248,3 @@ def test_cli_rejects_draft_and_writes_then_reviews_approved_package(
     )
     assert revised_package.approval_state is BriefApprovalState.REVISION_REQUESTED
     assert revised_package.revision_note == note
-

@@ -1,13 +1,12 @@
-"""Deterministic, approval-gated content package generation."""
+"""Approval-gated orchestration for content package generation."""
+
+from collections import Counter
 
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import ContentDraft, ContentPackage
 from agentic_workshop.domain.identity import EmployeeId
-from agentic_workshop.domain.marketing import (
-    BriefApprovalState,
-    ContentAssignment,
-    WeeklyMarketingBrief,
-)
+from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
+from agentic_workshop.ports.content_generation import ContentDraftGenerator
 
 CASEY_ID = EmployeeId("casey")
 
@@ -24,10 +23,17 @@ class ClientProfileMismatchError(ContentPackageError):
     """Raised when a brief and profile refer to different clients."""
 
 
-class GenerateContentPackage:
-    """Transform approved assignments into channel-specific, non-publishing drafts."""
+class InvalidGeneratedDraftsError(ContentPackageError):
+    """Raised when a drafting strategy violates provenance or coverage contracts."""
 
-    def execute(
+
+class GenerateContentPackage:
+    """Validate inputs and generator output, then assemble a reviewable draft package."""
+
+    def __init__(self, generator: ContentDraftGenerator) -> None:
+        self._generator = generator
+
+    async def execute(
         self,
         brief: WeeklyMarketingBrief,
         client: ClientProfile,
@@ -49,11 +55,17 @@ class GenerateContentPackage:
                 (*brief.source_references, client.source_reference, approved_brief_source)
             )
         )
-        drafts = tuple(
-            self._draft_assignment(assignment, brief, client, sources)
-            for assignment in brief.content_assignments
-        )
         missing = self._missing_inputs(brief, client)
+        assets = self._required_assets(missing)
+        generation = await self._generator.generate(
+            brief,
+            client,
+            source_references=sources,
+            missing_information=missing,
+            required_assets=assets,
+        )
+        self._validate_drafts(generation.drafts, brief, client, sources)
+
         return ContentPackage(
             package_id=f"{client.id}-{brief.week.isoformat()}-content",
             client_id=client.id,
@@ -62,50 +74,45 @@ class GenerateContentPackage:
             approved_brief_source=approved_brief_source,
             client_profile_source=client.source_reference,
             brand_voice=client.brand_voice,
-            drafts=drafts,
+            drafts=generation.drafts,
             assumptions=(
                 "This package is a draft and will not be published automatically.",
                 "Only client_profile.approved_facts are available as factual claims.",
             ),
             missing_assets_or_information=missing,
+            required_assets=assets,
+            generation_metadata=generation.metadata,
         )
 
-    def _draft_assignment(
-        self,
-        assignment: ContentAssignment,
+    @staticmethod
+    def _validate_drafts(
+        drafts: tuple[ContentDraft, ...],
         brief: WeeklyMarketingBrief,
         client: ClientProfile,
-        sources: tuple[str, ...],
-    ) -> ContentDraft:
-        channel = assignment.channel.lower()
-        if "author review" in channel:
-            title = f"Information request for {client.identity}"
-            body = self._author_request(client)
-        elif "planning" in channel:
-            title = f"Approved-claims ledger for {client.identity}"
-            body = self._claims_ledger(client)
-        elif "social" in channel:
-            title = f"Social draft: {brief.campaign_theme}"
-            body = self._public_draft(client, brief, compact=True)
-        elif "mail" in channel:
-            title = f"Email draft: {brief.campaign_theme}"
-            body = self._public_draft(client, brief, compact=False)
-        elif "website" in channel:
-            title = f"Website draft: {brief.campaign_theme}"
-            body = self._website_draft(client, brief)
-        else:
-            title = f"{assignment.deliverable} draft"
-            body = self._generic_draft(client, brief, assignment)
-
-        return ContentDraft(
-            assignment=assignment.deliverable,
-            channel=assignment.channel,
-            title=title,
-            body=body,
-            brand_voice_applied=client.brand_voice,
-            source_references=sources,
-            missing_assets_or_information=self._missing_inputs(brief, client),
+        required_sources: tuple[str, ...],
+    ) -> None:
+        expected = Counter(
+            (assignment.deliverable, assignment.channel)
+            for assignment in brief.content_assignments
         )
+        actual = Counter((draft.assignment, draft.channel) for draft in drafts)
+        if actual != expected:
+            raise InvalidGeneratedDraftsError(
+                "drafts must cover every brief assignment exactly once"
+            )
+        approved_facts = set(client.approved_facts)
+        required_source_set = set(required_sources)
+        for draft in drafts:
+            if draft.state != "draft":
+                raise InvalidGeneratedDraftsError("generated content must remain in draft state")
+            if draft.brand_voice_applied != client.brand_voice:
+                raise InvalidGeneratedDraftsError("draft brand voice differs from client profile")
+            if not set(draft.approved_facts_used).issubset(approved_facts):
+                raise InvalidGeneratedDraftsError("draft cites an unapproved client fact")
+            if not required_source_set.issubset(draft.source_references):
+                raise InvalidGeneratedDraftsError(
+                    "every draft must cite the approved brief and client sources"
+                )
 
     @staticmethod
     def _missing_inputs(
@@ -117,50 +124,8 @@ class GenerateContentPackage:
         return tuple(dict.fromkeys(missing))
 
     @staticmethod
-    def _author_request(client: ClientProfile) -> str:
-        requested = "\n".join(f"- {item}" for item in client.missing_information)
-        return (
-            f"Please review the following information needed for {client.identity}:\n\n"
-            f"{requested}\n\n"
-            "Please explicitly approve each response before it is added to the client profile."
-        )
-
-    @staticmethod
-    def _claims_ledger(client: ClientProfile) -> str:
-        if client.approved_facts:
-            facts = "\n".join(f"- APPROVED: {fact}" for fact in client.approved_facts)
-        else:
-            facts = "- No factual marketing claims are currently approved."
-        restrictions = "\n".join(f"- PROHIBITED: {claim}" for claim in client.prohibited_claims)
-        return f"Approved facts\n{facts}\n\nRestrictions\n{restrictions}"
-
-    @staticmethod
-    def _public_draft(
-        client: ClientProfile, brief: WeeklyMarketingBrief, *, compact: bool
-    ) -> str:
-        facts = " ".join(client.approved_facts)
-        if not facts:
-            return "Draft withheld: no factual marketing claims are currently approved."
-        if compact:
-            return f"{facts}\n\n{brief.call_to_action}"
-        return f"Hello,\n\n{facts}\n\n{brief.call_to_action}"
-
-    @staticmethod
-    def _website_draft(client: ClientProfile, brief: WeeklyMarketingBrief) -> str:
-        facts = "\n".join(client.approved_facts)
-        if not facts:
-            return "Website copy withheld: no factual marketing claims are currently approved."
-        return f"{client.identity}\n\n{facts}\n\n{brief.call_to_action}"
-
-    @staticmethod
-    def _generic_draft(
-        client: ClientProfile,
-        brief: WeeklyMarketingBrief,
-        assignment: ContentAssignment,
-    ) -> str:
-        facts = "\n".join(client.approved_facts) or "No approved factual claims available."
-        return (
-            f"Assignment: {assignment.instructions}\n\n"
-            f"Approved source material:\n{facts}\n\n"
-            f"Call to action: {brief.call_to_action}"
+    def _required_assets(missing: tuple[str, ...]) -> tuple[str, ...]:
+        asset_terms = ("asset", "cover", "illustration", "image", "logo", "video")
+        return tuple(
+            item for item in missing if any(term in item.lower() for term in asset_terms)
         )

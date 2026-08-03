@@ -5,8 +5,9 @@ working vertical slices contain one company, its Marketing department, Marketing
 Collins, Content Creator Casey, the client Jordan and the Fosters, and governed brief-to-content
 workflows.
 
-The workflow is deterministic and local. It does not call a language model, access a database, use a
-queue, or publish content. Client gaps remain explicit instead of being filled with invented facts.
+The workflow is deterministic and local by default. An explicitly gated OpenAI drafting adapter is
+available, but no command publishes content. Client gaps remain explicit instead of being filled
+with invented facts.
 
 See [the architecture guide](docs/architecture.md) and [implementation roadmap](docs/roadmap.md).
 
@@ -32,7 +33,12 @@ ruff check .
 mypy src
 ```
 
-## Generate a weekly marketing brief
+## Complete Sarah to Casey workflow
+
+The complete governed workflow has two independent approval gates. Neither approval publishes
+anything.
+
+### 1. Sarah creates the weekly brief
 
 ```shell
 agentic-workshop brief jordan-and-the-fosters --week-of 2026-08-03
@@ -48,7 +54,7 @@ Strict mode refuses to generate while the client profile tracks missing informat
 agentic-workshop brief jordan-and-the-fosters --week-of 2026-08-03 --strict
 ```
 
-## Review a brief
+### 2. The CEO reviews Sarah's brief
 
 Approve a planning artifact:
 
@@ -66,7 +72,7 @@ agentic-workshop review artifacts/weekly-briefs/jordan-and-the-fosters-2026-08-0
 Review updates the JSON and its paired Markdown representation. Approval remains review state only;
 it does not authorize or perform external publication.
 
-## Generate a content package
+### 3. Casey creates the content package
 
 Casey accepts only an approved weekly brief. First approve the brief as shown above, then run:
 
@@ -79,7 +85,9 @@ The command writes draft JSON and Markdown under `artifacts/content-packages/`. 
 assignment is adapted to its channel, carries source references and missing-input flags, and remains
 grounded in the matching client profile. A draft or revision-requested brief is rejected.
 
-Content packages use the same explicit CEO review command:
+### 4. The CEO reviews Casey's package
+
+Content packages use the same explicit review command:
 
 ```shell
 agentic-workshop review \
@@ -91,6 +99,38 @@ agentic-workshop review \
 ```
 
 Package approval is not publication authorization. No command in this slice publishes content.
+
+Content drafting defaults to an async deterministic adapter. The application service depends on
+the provider-neutral `ContentDraftGenerator` port and independently enforces approval, assignment
+coverage, client matching, approved-fact provenance, brand voice, and source references. A future
+`LanguageModel`-backed generator without changing domain models or the CEO review workflow.
+
+## Optional OpenAI draft generation
+
+The official OpenAI Python SDK and Responses API are available behind the provider-neutral
+`LanguageModel` port. Deterministic generation remains the default. OpenAI must be selected
+explicitly and every paid request requires `--confirm-paid-call`.
+
+Set `OPENAI_API_KEY` in the calling process or a production secret manager. Never put the key in a
+CLI argument, `.env`, repository file, artifact, prompt, fixture, or snapshot. If the variable is
+absent, the command fails before making a request. `.env` and common credential filenames are
+Git-ignored.
+
+The explicitly named smoke test writes a new draft package under
+`artifacts/live-smoke/openai/`; it cannot overwrite the deterministic baseline:
+
+```shell
+agentic-workshop live-smoke-openai \
+  artifacts/weekly-briefs/jordan-and-the-fosters-2026-08-03.json \
+  --model gpt-5.6-sol --reasoning-effort medium \
+  --max-output-tokens 4000 --timeout-seconds 60 --confirm-paid-call
+```
+
+It makes one Responses API request and records only the model name, response ID, token usage, and
+latency alongside the draft. Prompts and credentials are not recorded. The same adapter can be
+selected with `content-package --generator openai --confirm-paid-call`; model output goes to
+`artifacts/model-content-packages/` by default. All generated packages remain drafts and retain the
+same approval, factual-provenance, assignment-coverage, URL, and review-quotation validation gates.
 
 ## Version-controlled resources
 

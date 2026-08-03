@@ -20,12 +20,32 @@ class PurchaseLink(DomainModel):
     url: NonBlank
 
 
+class PublicChannel(DomainModel):
+    """An approved public presence and the uses authorized for it."""
+
+    kind: NonBlank
+    label: NonBlank
+    url: NonBlank
+    approved_uses: tuple[NonBlank, ...]
+    is_central_hub: bool = False
+
+
+class ApprovedReview(DomainModel):
+    """A verbatim third-party quotation with inseparable provenance and permissions."""
+
+    quote: NonBlank
+    attribution: NonBlank
+    source_url: NonBlank
+    approved_uses: tuple[NonBlank, ...]
+
+
 class ClientProfile(DomainModel):
     """The sole authoritative marketing input for a client."""
 
     id: ClientId
     identity: NonBlank
     summary: NonBlank
+    author_story: NonBlank | None = None
     mission: NonBlank
     brand_voice: tuple[NonBlank, ...]
     audiences: tuple[AudienceProfile, ...]
@@ -33,9 +53,13 @@ class ClientProfile(DomainModel):
     marketing_goals: tuple[NonBlank, ...]
     calls_to_action: tuple[NonBlank, ...]
     purchase_links: tuple[PurchaseLink, ...]
+    public_channels: tuple[PublicChannel, ...] = ()
+    approved_reviews: tuple[ApprovedReview, ...] = ()
     approved_facts: tuple[NonBlank, ...]
     prohibited_claims: tuple[NonBlank, ...]
+    marketing_permissions: tuple[NonBlank, ...] = ()
     missing_information: tuple[NonBlank, ...]
+    deferred_information: tuple[NonBlank, ...] = ()
     source_reference: NonBlank
     version: int = Field(ge=1)
 
@@ -43,4 +67,3 @@ class ClientProfile(DomainModel):
     def is_complete(self) -> bool:
         """Return whether the profile has no explicitly tracked knowledge gaps."""
         return not self.missing_information
-

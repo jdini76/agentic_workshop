@@ -8,7 +8,12 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from agentic_workshop.adapters.deterministic_content import (
+    DeterministicContentDraftGenerator,
+)
 from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
+from agentic_workshop.adapters.model_content import ModelContentDraftGenerator
+from agentic_workshop.adapters.openai_language_model import OpenAILanguageModel
 from agentic_workshop.application.content import ContentPackageError, GenerateContentPackage
 from agentic_workshop.application.marketing import (
     CLIENT_RESOURCE_TEMPLATE,
@@ -18,12 +23,18 @@ from agentic_workshop.application.marketing import (
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
+from agentic_workshop.ports.content_generation import ContentDraftGenerator
+from agentic_workshop.ports.models import LanguageModelError
 from agentic_workshop.presentation.content_markdown import render_content_package
 from agentic_workshop.presentation.markdown import render_weekly_marketing_brief
 
 PACKAGE_RESOURCE_ROOT = Path(__file__).parent / "resources"
 DEFAULT_ARTIFACT_ROOT = Path("artifacts") / "weekly-briefs"
 DEFAULT_CONTENT_ARTIFACT_ROOT = Path("artifacts") / "content-packages"
+DEFAULT_MODEL_ARTIFACT_ROOT = Path("artifacts") / "model-content-packages"
+DEFAULT_LIVE_SMOKE_ARTIFACT_ROOT = Path("artifacts") / "live-smoke" / "openai"
+DEFAULT_OPENAI_MODEL = "gpt-5.6-sol"
+CASEY_PROMPT_RESOURCE = "prompts/casey-content-creator.v1.md"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +54,17 @@ def build_parser() -> argparse.ArgumentParser:
     content.add_argument("brief_file", type=Path)
     content.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
     content.add_argument("--artifact-root", type=Path, default=DEFAULT_CONTENT_ARTIFACT_ROOT)
+    _add_model_options(content)
+
+    live = subparsers.add_parser(
+        "live-smoke-openai",
+        help="make one explicitly confirmed paid OpenAI draft-generation call",
+    )
+    live.add_argument("brief_file", type=Path)
+    live.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
+    live.add_argument("--artifact-root", type=Path, default=DEFAULT_LIVE_SMOKE_ARTIFACT_ROOT)
+    _add_openai_settings(live)
+    live.add_argument("--confirm-paid-call", action="store_true", required=True)
 
     review = subparsers.add_parser("review", help="review an existing brief JSON file")
     review.add_argument("brief_file", type=Path)
@@ -60,10 +82,13 @@ def run(argv: Sequence[str] | None = None) -> int:
             return _generate(args)
         if args.command == "content-package":
             return _generate_content_package(args)
+        if args.command == "live-smoke-openai":
+            return _generate_content_package(args, force_openai=True)
         return _review(args)
     except (
         ContentPackageError,
         MarketingBriefError,
+        LanguageModelError,
         OSError,
         ValidationError,
         ValueError,
@@ -119,24 +144,75 @@ def _write_artifacts(brief: WeeklyMarketingBrief, json_path: Path, markdown_path
     markdown_path.write_text(render_weekly_marketing_brief(brief), encoding="utf-8")
 
 
-def _generate_content_package(args: argparse.Namespace) -> int:
+def _generate_content_package(
+    args: argparse.Namespace, *, force_openai: bool = False
+) -> int:
     brief = WeeklyMarketingBrief.model_validate_json(
         args.brief_file.read_text(encoding="utf-8")
     )
     loader = FilesystemResourceLoader(args.resource_root)
     client_ref = CLIENT_RESOURCE_TEMPLATE.format(client_id=brief.client_id)
     client = ClientProfile.model_validate_json(asyncio.run(loader.load_text(client_ref)))
-    package = GenerateContentPackage().execute(
-        brief,
-        client,
-        approved_brief_source=str(args.brief_file),
+    use_openai = force_openai or args.generator == "openai"
+    if use_openai and not args.confirm_paid_call:
+        raise ValueError("--confirm-paid-call is required before any paid OpenAI request")
+    generator = asyncio.run(_content_generator(args, loader, use_openai=use_openai))
+    package = asyncio.run(
+        GenerateContentPackage(generator).execute(
+            brief,
+            client,
+            approved_brief_source=str(args.brief_file),
+        )
     )
-    json_path = args.artifact_root / f"{package.package_id}.json"
-    markdown_path = args.artifact_root / f"{package.package_id}.md"
+    artifact_root = args.artifact_root
+    if use_openai and artifact_root == DEFAULT_CONTENT_ARTIFACT_ROOT:
+        artifact_root = DEFAULT_MODEL_ARTIFACT_ROOT
+    suffix = "-openai-smoke" if force_openai else ""
+    json_path = artifact_root / f"{package.package_id}{suffix}.json"
+    markdown_path = artifact_root / f"{package.package_id}{suffix}.md"
     _write_content_artifacts(package, json_path, markdown_path)
     print(json_path)
     print(markdown_path)
     return 0
+
+
+def _add_model_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--generator", choices=("deterministic", "openai"), default="deterministic"
+    )
+    _add_openai_settings(parser)
+    parser.add_argument("--confirm-paid-call", action="store_true")
+
+
+def _add_openai_settings(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model", default=DEFAULT_OPENAI_MODEL)
+    parser.add_argument("--timeout-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("none", "low", "medium", "high", "xhigh", "max"),
+        default="medium",
+    )
+    parser.add_argument("--max-output-tokens", type=int, default=4000)
+
+
+async def _content_generator(
+    args: argparse.Namespace,
+    loader: FilesystemResourceLoader,
+    *,
+    use_openai: bool,
+) -> ContentDraftGenerator:
+    if not use_openai:
+        return DeterministicContentDraftGenerator()
+    if args.timeout_seconds <= 0 or args.max_output_tokens <= 0:
+        raise ValueError("timeout and output-token budget must be positive")
+    instructions = await loader.load_text(CASEY_PROMPT_RESOURCE)
+    model = OpenAILanguageModel.from_environment(
+        model=args.model,
+        timeout_seconds=args.timeout_seconds,
+        reasoning_effort=args.reasoning_effort,
+        max_output_tokens=args.max_output_tokens,
+    )
+    return ModelContentDraftGenerator(model, instructions=instructions)
 
 
 def _load_review_artifact(path: Path) -> WeeklyMarketingBrief | ContentPackage:
