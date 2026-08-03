@@ -139,6 +139,17 @@ Future marketing derivatives must be stored separately from originals and requir
 ID, checksum, manifest entry, approval state, uses, restrictions, and provenance. The original must
 never be overwritten or sanitized in place.
 
+The CEO has confirmed ownership rights to the complete Jordan and the Fosters cover and authorized
+its use for public book marketing on the official website, social posts, email marketing, and
+campaign-package previews. This rights confirmation does not authorize automatic publication or
+external delivery. The original remains local-only and Git-ignored.
+
+A metadata-stripped 1576 × 1600 sRGB PNG is recorded as a separate approved derivative under
+`assets/clients/jordan-and-the-fosters/derivatives/`. Its manifest state is `approved` for the
+official website, social posts, email marketing, campaign previews, and Casey's package-metadata
+recommendations. Casey recommends this metadata-clean derivative instead of the metadata-bearing
+original. Publication and external delivery remain separate human-authorized actions.
+
 Content drafting defaults to an async deterministic adapter. The application service depends on
 the provider-neutral `ContentDraftGenerator` port and independently enforces approval, assignment
 coverage, client matching, approved-fact provenance, brand voice, and source references. A future

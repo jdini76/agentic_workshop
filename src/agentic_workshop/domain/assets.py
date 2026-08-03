@@ -34,20 +34,40 @@ class AssetChecksum(DomainModel):
 
 
 class AssetSource(DomainModel):
-    source_type: Literal["ceo_supplied_local_file"]
+    source_type: Literal["ceo_supplied_local_file", "local_derivative"]
     description: NonBlank
 
 
 class AssetAttribution(DomainModel):
     text: str | None = None
     required: bool
-    status: Literal["confirmed", "not_confirmed"]
+    status: Literal["confirmed", "not_confirmed", "rights_confirmed_by_ceo"]
 
     @model_validator(mode="after")
     def require_confirmed_text(self) -> "AssetAttribution":
         if self.required and (self.text is None or not self.text.strip()):
             raise ValueError("required attribution must include text")
         return self
+
+
+class AssetTransformation(DomainModel):
+    """Exact, non-generative transformation provenance for one derivative."""
+
+    operation: Literal["resize_and_strip_metadata"]
+    source_dimensions: AssetDimensions
+    output_dimensions: AssetDimensions
+    maximum_height_px: int = Field(gt=0)
+    resampling: Literal["lanczos"]
+    color_space: Literal["sRGB"]
+    preserve_aspect_ratio: Literal[True]
+    cropped: Literal[False]
+    rotated: Literal[False]
+    recolored: Literal[False]
+    text_changed: Literal[False]
+    artwork_changed: Literal[False]
+    layout_changed: Literal[False]
+    embedded_metadata_removed: Literal[True]
+    lossless_png_optimization: Literal[True]
 
 
 class ClientAsset(DomainModel):
@@ -58,6 +78,9 @@ class ClientAsset(DomainModel):
     name: NonBlank
     description: NonBlank
     asset_type: AssetType
+    parent_asset_id: str | None = None
+    parent_asset_version: int | None = Field(default=None, gt=0)
+    transformation: AssetTransformation | None = None
     repository_path: NonBlank
     file_format: Literal["png"]
     dimensions: AssetDimensions
@@ -80,6 +103,18 @@ class ClientAsset(DomainModel):
             raise ValueError("revision_note is only valid when asset revision is requested")
         if not self.restrictions:
             raise ValueError("asset restrictions cannot be empty")
+        parent_fields = (
+            self.parent_asset_id,
+            self.parent_asset_version,
+            self.transformation,
+        )
+        if any(value is not None for value in parent_fields) and not all(
+            value is not None for value in parent_fields
+        ):
+            raise ValueError("derivative parent and transformation fields must be complete")
+        forbidden_uses = {"automatic_publication", "external_delivery"}
+        if forbidden_uses.intersection(self.approved_uses):
+            raise ValueError("asset use cannot authorize publication or external delivery")
         return self
 
 

@@ -15,6 +15,23 @@ from agentic_workshop.domain.assets import (
     ClientAssetManifest,
 )
 
+REPOSITORY_ROOT = Path(__file__).parents[1]
+JORDAN_MANIFEST = (
+    REPOSITORY_ROOT
+    / "src"
+    / "agentic_workshop"
+    / "resources"
+    / "client-assets"
+    / "jordan-and-the-fosters.v1.json"
+)
+PRIVATE_METADATA_MARKERS = (
+    b"Canva",
+    b"<x:xmpmeta",
+    b"ns.attribution.com",
+    b"CreatorTool",
+    b"Exif\x00\x00",
+)
+
 
 def png_chunk(name: bytes, payload: bytes) -> bytes:
     checksum = binascii.crc32(name + payload) & 0xFFFFFFFF
@@ -200,3 +217,69 @@ def test_asset_review_refuses_checksum_mismatch(tmp_path: Path) -> None:
         )
 
     assert error.value.code == 2
+
+
+def load_jordan_manifest() -> ClientAssetManifest:
+    return ClientAssetManifest.model_validate_json(JORDAN_MANIFEST.read_text(encoding="utf-8"))
+
+
+def test_jordan_original_checksum_is_unchanged_when_local_original_exists() -> None:
+    manifest = load_jordan_manifest()
+    original = manifest.assets[0]
+    original_path = REPOSITORY_ROOT / original.repository_path
+
+    assert original.checksum.value == (
+        "3e63da30359b5c0ff1a4df8b49ac4fa0cdc685f2ac277f63179a1de2df827b5b"
+    )
+    if original_path.exists():
+        assert hashlib.sha256(original_path.read_bytes()).hexdigest() == original.checksum.value
+
+
+def test_jordan_derivative_preserves_aspect_ratio_and_contains_no_private_metadata() -> None:
+    manifest = load_jordan_manifest()
+    original, derivative = manifest.assets
+    derivative_path = REPOSITORY_ROOT / derivative.repository_path
+    raw = derivative_path.read_bytes()
+
+    assert derivative.dimensions.width_px * original.dimensions.height_px == (
+        derivative.dimensions.height_px * original.dimensions.width_px
+    )
+    assert derivative.dimensions.width_px == 1576
+    assert derivative.dimensions.height_px == 1600
+    assert hashlib.sha256(raw).hexdigest() == derivative.checksum.value
+    assert all(marker not in raw for marker in PRIVATE_METADATA_MARKERS)
+    assert derivative.transformation is not None
+    assert derivative.transformation.embedded_metadata_removed
+
+
+def test_approved_derivative_is_the_only_available_marketing_recommendation() -> None:
+    manifest = load_jordan_manifest()
+    original, derivative = manifest.assets
+
+    recommendations = asyncio.run(
+        ClientAssetInventory(REPOSITORY_ROOT).recommendations(manifest)
+    )
+
+    assert derivative.approval_state is AssetApprovalState.APPROVED
+    assert derivative.approved_uses == (
+        "content_package_asset_recommendation",
+        "official_website",
+        "social_posts",
+        "email_marketing",
+        "campaign_package_previews",
+    )
+    assert len(recommendations) == 1
+    assert recommendations[0].asset_id == derivative.asset_id
+    assert recommendations[0].availability == "available"
+    assert original.asset_id not in {item.asset_id for item in recommendations}
+
+
+def test_approved_derivative_does_not_authorize_publication_or_delivery() -> None:
+    derivative = load_jordan_manifest().assets[1]
+
+    assert "automatic_publication" not in derivative.approved_uses
+    assert "external_delivery" not in derivative.approved_uses
+    assert any(
+        "separate explicit approval and action" in restriction
+        for restriction in derivative.restrictions
+    )
