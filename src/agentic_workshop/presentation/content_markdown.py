@@ -54,6 +54,18 @@ def render_content_package(package: ContentPackage) -> str:
         lines.extend(f"- {item}" for item in draft.required_assets)
         if not draft.required_assets:
             lines.append("- None")
+        lines.extend(["", "### Asset recommendations", ""])
+        for recommendation in draft.asset_recommendations:
+            lines.extend(
+                [
+                    f"- Asset ID: `{recommendation.asset_id}`",
+                    f"  - Availability: **{recommendation.availability}**",
+                    f"  - Repository path: `{recommendation.repository_path}`",
+                    "  - Recommendation only; publication requires separate approval.",
+                ]
+            )
+        if not draft.asset_recommendations:
+            lines.append("- None")
         lines.append("")
     _append_list(lines, "Package assumptions", package.assumptions)
     _append_list(

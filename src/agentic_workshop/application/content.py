@@ -78,6 +78,7 @@ class GenerateContentPackage:
             client,
             (client.source_reference, approved_brief_source),
         )
+        drafts = tuple(self._attach_assignment_assets(draft) for draft in generation.drafts)
 
         return ContentPackage(
             package_id=f"{client.id}-{brief.week.isoformat()}-content",
@@ -87,7 +88,7 @@ class GenerateContentPackage:
             approved_brief_source=approved_brief_source,
             client_profile_source=client.source_reference,
             brand_voice=client.brand_voice,
-            drafts=generation.drafts,
+            drafts=drafts,
             assumptions=(
                 "This package is a draft and will not be published automatically.",
                 "Only client_profile.approved_facts are available as factual claims.",
@@ -97,6 +98,32 @@ class GenerateContentPackage:
             asset_recommendations=self._asset_recommendations,
             generation_metadata=generation.metadata,
         )
+
+    def _attach_assignment_assets(self, draft: ContentDraft) -> ContentDraft:
+        required_use = self._channel_asset_use(draft.channel)
+        recommendations = tuple(
+            recommendation
+            for recommendation in self._asset_recommendations
+            if recommendation.availability == "available"
+            and required_use in recommendation.permitted_uses
+        )
+        return ContentDraft.model_validate(
+            {
+                **draft.model_dump(mode="json"),
+                "asset_recommendations": recommendations,
+            }
+        )
+
+    @staticmethod
+    def _channel_asset_use(channel: str) -> str:
+        normalized = channel.lower()
+        if "social" in normalized:
+            return "social_posts"
+        if "email" in normalized:
+            return "email_marketing"
+        if "website" in normalized:
+            return "official_website"
+        return "campaign_package_previews"
 
     @staticmethod
     def _validate_drafts(
@@ -128,11 +155,19 @@ class GenerateContentPackage:
                     "every draft must cite the approved brief and client sources"
                 )
 
-    @staticmethod
     def _missing_inputs(
-        brief: WeeklyMarketingBrief, client: ClientProfile
+        self, brief: WeeklyMarketingBrief, client: ClientProfile
     ) -> tuple[str, ...]:
         missing = [*brief.missing_inputs, *client.missing_information]
+        if any(
+            recommendation.availability == "available"
+            for recommendation in self._asset_recommendations
+        ):
+            missing = [
+                item
+                for item in missing
+                if "approved cover and illustrations" not in item.lower()
+            ]
         if any(voice.lower() == "not yet supplied" for voice in client.brand_voice):
             missing.append("Approved brand voice")
         return tuple(dict.fromkeys(missing))

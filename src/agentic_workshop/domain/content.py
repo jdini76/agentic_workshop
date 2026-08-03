@@ -24,6 +24,7 @@ class ContentDraft(DomainModel):
     source_references: tuple[NonBlank, ...]
     missing_assets_or_information: tuple[NonBlank, ...]
     required_assets: tuple[NonBlank, ...]
+    asset_recommendations: tuple[AssetRecommendation, ...] = ()
 
     @model_validator(mode="after")
     def require_provenance(self) -> "ContentDraft":

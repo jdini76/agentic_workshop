@@ -69,6 +69,7 @@ class ClientAssetInventory:
                     availability="available" if result.valid else "unavailable",
                     diagnostic=result.diagnostic,
                     approved_use=RECOMMENDATION_USE,
+                    permitted_uses=asset.approved_uses,
                 )
             )
         return tuple(recommendations)

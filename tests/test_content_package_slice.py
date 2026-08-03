@@ -15,6 +15,7 @@ from agentic_workshop.application.content import (
 )
 from agentic_workshop.application.marketing import GenerateWeeklyMarketingBrief
 from agentic_workshop.cli import PACKAGE_RESOURCE_ROOT, run
+from agentic_workshop.domain.assets import AssetRecommendation, AssetType
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import (
     ContentDraft,
@@ -207,6 +208,52 @@ def test_generator_output_requires_complete_approved_sources() -> None:
         )
 
 
+def test_assignment_assets_require_channel_permission_and_availability() -> None:
+    brief, client = load_inputs()
+    recommendation = AssetRecommendation(
+        asset_id="approved-derivative",
+        asset_type=AssetType.FRONT_COVER,
+        repository_path="assets/clients/client/derivatives/cover.png",
+        manifest_source="client-assets/client.v1.json",
+        availability="available",
+        diagnostic="verified",
+        approved_use="content_package_asset_recommendation",
+        permitted_uses=(
+            "content_package_asset_recommendation",
+            "official_website",
+        ),
+    )
+    service = GenerateContentPackage(
+        DeterministicContentDraftGenerator(),
+        asset_recommendations=(recommendation,),
+    )
+
+    package = asyncio.run(
+        service.execute(
+            approve(brief),
+            client,
+            approved_brief_source="approved.json",
+        )
+    )
+
+    website, social = package.drafts
+    assert website.asset_recommendations == (recommendation,)
+    assert social.asset_recommendations == ()
+
+    unavailable = recommendation.model_copy(update={"availability": "unavailable"})
+    unavailable_package = asyncio.run(
+        GenerateContentPackage(
+            DeterministicContentDraftGenerator(),
+            asset_recommendations=(unavailable,),
+        ).execute(
+            approve(brief),
+            client,
+            approved_brief_source="approved.json",
+        )
+    )
+    assert all(not draft.asset_recommendations for draft in unavailable_package.drafts)
+
+
 def test_cli_rejects_draft_and_writes_then_reviews_approved_package(
     tmp_path: Path,
 ) -> None:
@@ -235,6 +282,20 @@ def test_cli_rejects_draft_and_writes_then_reviews_approved_package(
     package = ContentPackage.model_validate_json(package_path.read_text(encoding="utf-8"))
     assert package.approval_state is BriefApprovalState.DRAFT
     assert package_path.with_suffix(".md").is_file()
+    assert len(package.asset_recommendations) == 1
+    assert all(len(draft.asset_recommendations) == 1 for draft in package.drafts)
+    assert all(
+        draft.asset_recommendations[0].asset_id
+        == "jordan-and-the-fosters-front-cover-marketing-1600h"
+        for draft in package.drafts
+    )
+    assert all(
+        "originals/JATF_Front_Cover.png"
+        not in draft.asset_recommendations[0].repository_path
+        for draft in package.drafts
+    )
+    assert package.required_assets == ()
+    assert all(draft.required_assets == () for draft in package.drafts)
 
     assert run(["review", str(package_path), "--approve"]) == 0
     approved_package = ContentPackage.model_validate_json(

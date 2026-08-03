@@ -154,3 +154,4 @@ class AssetRecommendation(DomainModel):
     availability: Literal["available", "unavailable"]
     diagnostic: NonBlank
     approved_use: Literal["content_package_asset_recommendation"]
+    permitted_uses: tuple[NonBlank, ...] = ()
