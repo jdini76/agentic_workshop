@@ -5,34 +5,14 @@
       "channel": "Official website",
       "title": "A Gentle Story About Trust and Belonging",
       "body": "Jordan and the Fosters is an illustrated read-aloud story for children ages 3–8 and the families who read with them.\n\nJordan is a cautious but gentle dog who struggles to trust and feel that he belongs when he enters the care of the Foster family. With help from Fiona, the family’s wise older dog, Jordan discovers friendship, courage, and the safety of opening his heart. His journey celebrates patience, compassion, trust, belonging, and helping animals.\n\nShare Jordan’s journey of kindness, courage, and belonging with a child you love. Choose your edition of Jordan and the Fosters on Amazon: https://www.amazon.com/gp/aw/d/B0D5BT1XDZ\n\nDraft note: Text-only; no image or visual asset included.",
-      "approved_fact_indexes": [0, 1, 2, 3, 8, 14],
-      "source_references": [
-        "employees/sarah-collins.v1.json",
-        "clients/jordan-and-the-fosters.v1.json",
-        "prompts/sarah-weekly-marketing.v1.md",
-        "sops/weekly-marketing-brief.v1.md",
-        "artifacts\\weekly-briefs\\jordan-and-the-fosters-2026-08-03.json",
-        "https://www.amazon.com/gp/aw/d/B0D5BT1XDZ",
-        "https://www.jordanandthefosters.fun",
-        "https://readersfavorite.com/book-review/jordan-and-the-fosters"
-      ]
+      "approved_fact_ids": ["fact-000", "fact-001", "fact-002", "fact-003", "fact-008", "fact-014"]
     },
     {
       "assignment": "Social awareness post",
       "channel": "Social channels linked from the official website",
       "title": "Social Awareness Post",
       "body": "How can we help children understand that a cautious animal may need patience and kindness before trust can grow?\n\nJordan and the Fosters follows Jordan, a cautious but gentle dog, as he discovers friendship, courage, and belonging with the Foster family. It is an illustrated read-aloud story for children ages 3–8 and the families who share stories with them.\n\nShare Jordan’s journey of kindness, courage, and belonging with a child you love. Choose your edition of Jordan and the Fosters on Amazon: https://www.amazon.com/gp/aw/d/B0D5BT1XDZ\n\nDraft note: Text-only; no image or visual asset included.",
-      "approved_fact_indexes": [0, 1, 2, 3, 8, 14],
-      "source_references": [
-        "employees/sarah-collins.v1.json",
-        "clients/jordan-and-the-fosters.v1.json",
-        "prompts/sarah-weekly-marketing.v1.md",
-        "sops/weekly-marketing-brief.v1.md",
-        "artifacts\\weekly-briefs\\jordan-and-the-fosters-2026-08-03.json",
-        "https://www.amazon.com/gp/aw/d/B0D5BT1XDZ",
-        "https://www.jordanandthefosters.fun",
-        "https://readersfavorite.com/book-review/jordan-and-the-fosters"
-      ]
+      "approved_fact_ids": ["fact-000", "fact-001", "fact-002", "fact-003", "fact-008", "fact-014"]
     }
   ]
 }

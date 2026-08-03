@@ -46,15 +46,12 @@ class ModelDraftProposal(DomainModel):
     channel: NonBlank
     title: NonBlank
     body: NonBlank
-    approved_fact_indexes: tuple[int, ...]
-    source_references: tuple[NonBlank, ...]
+    approved_fact_ids: tuple[NonBlank, ...]
 
     @model_validator(mode="after")
-    def require_unique_non_negative_indexes(self) -> "ModelDraftProposal":
-        if any(index < 0 for index in self.approved_fact_indexes):
-            raise ValueError("approved fact indexes cannot be negative")
-        if len(set(self.approved_fact_indexes)) != len(self.approved_fact_indexes):
-            raise ValueError("approved fact indexes must be unique")
+    def require_unique_fact_ids(self) -> "ModelDraftProposal":
+        if len(set(self.approved_fact_ids)) != len(self.approved_fact_ids):
+            raise ValueError("approved fact IDs must be unique")
         return self
 
 
@@ -74,6 +71,7 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
         brief: WeeklyMarketingBrief,
         client: ClientProfile,
         *,
+        approved_brief_source: str,
         source_references: tuple[str, ...],
         missing_information: tuple[str, ...],
         required_assets: tuple[str, ...],
@@ -83,7 +81,7 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
                 ModelMessage(role="system", content=self._instructions),
                 ModelMessage(
                     role="user",
-                    content=self._request_payload(brief, client, source_references),
+                    content=self._request_payload(brief, client),
                 ),
             ),
             response_schema=ModelDraftBatch.model_json_schema(),
@@ -106,7 +104,7 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
             proposals,
             brief,
             client,
-            source_references,
+            approved_brief_source,
         )
         if violations:
             raise ModelMalformedOutputError(
@@ -118,6 +116,7 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
             self._to_content_draft(
                 proposal,
                 client,
+                approved_brief_source,
                 missing_information,
                 required_assets,
             )
@@ -135,21 +134,21 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
             ),
         )
 
-    @staticmethod
+    @classmethod
     def _request_payload(
+        cls,
         brief: WeeklyMarketingBrief,
         client: ClientProfile,
-        source_references: tuple[str, ...],
     ) -> str:
         payload = {
             "task": (
-                "Return exactly one draft for every assignment. Use only approved_facts by "
-                "index. Follow all brand voice, prohibited claim, permission, quotation, link, "
+                "Return exactly one draft for every assignment. Use only approved facts by "
+                "fact ID. Follow all brand voice, prohibited claim, permission, quotation, link, "
                 "editorial, and no-publication constraints. Public copy is only title and body; "
-                "never put metadata or internal notes in it. Report only sources actually used."
+                "never put metadata or internal notes in it. Report only approved fact IDs; the "
+                "application owns final source provenance."
             ),
             "brief": brief.model_dump(mode="json"),
-            "authorized_source_references": source_references,
             "client": {
                 "identity": client.identity,
                 "summary": client.summary,
@@ -164,7 +163,13 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
                 "approved_reviews": [
                     review.model_dump(mode="json") for review in client.approved_reviews
                 ],
-                "approved_facts": list(enumerate(client.approved_facts)),
+                "approved_facts": [
+                    {
+                        "fact_id": cls._fact_id(index),
+                        "text": fact,
+                    }
+                    for index, fact in enumerate(client.approved_facts)
+                ],
                 "prohibited_claims": client.prohibited_claims,
                 "marketing_permissions": client.marketing_permissions,
                 "missing_information": client.missing_information,
@@ -177,7 +182,7 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
                 "required_format_statement": FORMAT_STATEMENT,
                 "social_word_range": {"minimum": 100, "maximum": 140},
                 "one_call_to_action_and_purchase_url_per_draft": True,
-                "sources_must_be_limited_to_material_actually_used": True,
+                "application_derives_sources_from_validated_facts_and_copy": True,
                 "channel_drafts_must_use_meaningfully_different_structures": True,
             },
         }
@@ -188,18 +193,17 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
         cls,
         proposal: ModelDraftProposal,
         client: ClientProfile,
+        approved_brief_source: str,
         missing_information: tuple[str, ...],
         required_assets: tuple[str, ...],
     ) -> ContentDraft:
-        try:
-            facts = tuple(
-                client.approved_facts[index] for index in proposal.approved_fact_indexes
-            )
-        except IndexError:
-            raise ModelMalformedOutputError(
-                "model cited an unknown approved fact index",
-                provider="configured-model",
-            ) from None
+        catalog = cls._fact_catalog(client)
+        facts = tuple(catalog[fact_id] for fact_id in proposal.approved_fact_ids)
+        sources = cls._derive_sources(
+            proposal,
+            client,
+            approved_brief_source,
+        )
         return ContentDraft(
             assignment=proposal.assignment,
             channel=proposal.channel,
@@ -207,24 +211,9 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
             body=proposal.body,
             brand_voice_applied=client.brand_voice,
             approved_facts_used=facts,
-            source_references=proposal.source_references,
+            source_references=sources,
             missing_assets_or_information=missing_information,
             required_assets=required_assets,
-        )
-
-    @staticmethod
-    def _authorized_sources(
-        client: ClientProfile, source_references: tuple[str, ...]
-    ) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                (
-                    *source_references,
-                    *(link.url for link in client.purchase_links),
-                    *(channel.url for channel in client.public_channels),
-                    *(review.source_url for review in client.approved_reviews),
-                )
-            )
         )
 
     @classmethod
@@ -233,21 +222,19 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
         batch: ModelDraftBatch,
         brief: WeeklyMarketingBrief,
         client: ClientProfile,
-        source_references: tuple[str, ...],
+        approved_brief_source: str,
     ) -> tuple[str, ...]:
         assignments = {
             (assignment.deliverable, assignment.channel): assignment
             for assignment in brief.content_assignments
         }
         violations: list[str] = []
-        fact_sets: list[tuple[int, ...]] = []
         bodies: list[str] = []
         for proposal in batch.drafts:
             assignment = assignments.get((proposal.assignment, proposal.channel))
             if assignment is None:
                 violations.append(f"{proposal.assignment}: unknown assignment")
                 continue
-            fact_sets.append(proposal.approved_fact_indexes)
             bodies.append(proposal.body)
             violations.extend(
                 cls._draft_violations(
@@ -255,11 +242,9 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
                     assignment,
                     brief,
                     client,
-                    source_references,
+                    approved_brief_source,
                 )
             )
-        if len(fact_sets) > 1 and len(set(fact_sets)) == 1:
-            violations.append("channel adaptation: every draft reported the same fact selection")
         if len(bodies) > 1 and cls._body_similarity(bodies[0], bodies[1]) > 0.75:
             violations.append("channel adaptation: public copy is excessively repetitive")
         return tuple(dict.fromkeys(violations))
@@ -271,7 +256,7 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
         assignment: ContentAssignment,
         brief: WeeklyMarketingBrief,
         client: ClientProfile,
-        source_references: tuple[str, ...],
+        approved_brief_source: str,
     ) -> list[str]:
         label = assignment.deliverable
         body_lower = proposal.body.lower()
@@ -317,13 +302,9 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
             cls._validate_review_usage(proposal.body, client)
         except ModelMalformedOutputError as error:
             violations.append(f"{label}: {error}")
-        violations.extend(
-            cls._source_violations(
-                proposal,
-                client,
-                source_references,
-            )
-        )
+        unknown_fact_ids = set(proposal.approved_fact_ids) - set(cls._fact_catalog(client))
+        if unknown_fact_ids:
+            violations.append(f"{label}: an invented or unauthorized fact ID was reported")
         return violations
 
     @staticmethod
@@ -347,35 +328,35 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
         return int(match.group("minimum")), int(match.group("maximum"))
 
     @classmethod
-    def _source_violations(
+    def _derive_sources(
         cls,
         proposal: ModelDraftProposal,
         client: ClientProfile,
-        source_references: tuple[str, ...],
-    ) -> list[str]:
-        label = proposal.assignment
-        authorized = set(cls._authorized_sources(client, source_references))
-        reported = set(proposal.source_references)
-        expected = {source_references[-1]}
-        if proposal.approved_fact_indexes:
-            expected.add(client.source_reference)
-        expected.update(
-            link.url for link in client.purchase_links if link.url in proposal.body
-        )
-        expected.update(
+        approved_brief_source: str,
+    ) -> tuple[str, ...]:
+        sources = [approved_brief_source]
+        if proposal.approved_fact_ids:
+            sources.append(client.source_reference)
+        sources.extend(link.url for link in client.purchase_links if link.url in proposal.body)
+        sources.extend(
             channel.url for channel in client.public_channels if channel.url in proposal.body
         )
-        expected.update(
+        sources.extend(
             review.source_url
             for review in client.approved_reviews
             if review.quote in proposal.body or review.attribution in proposal.body
         )
-        violations: list[str] = []
-        if not reported.issubset(authorized):
-            violations.append(f"{label}: an unauthorized source was reported")
-        if reported != expected:
-            violations.append(f"{label}: reported sources do not match material actually used")
-        return violations
+        return tuple(dict.fromkeys(sources))
+
+    @staticmethod
+    def _fact_id(index: int) -> str:
+        return f"fact-{index:03d}"
+
+    @classmethod
+    def _fact_catalog(cls, client: ClientProfile) -> dict[str, str]:
+        return {
+            cls._fact_id(index): fact for index, fact in enumerate(client.approved_facts)
+        }
 
     @staticmethod
     def _body_similarity(left: str, right: str) -> float:

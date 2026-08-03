@@ -18,6 +18,7 @@ class DeterministicContentDraftGenerator(ContentDraftGenerator):
         brief: WeeklyMarketingBrief,
         client: ClientProfile,
         *,
+        approved_brief_source: str,
         source_references: tuple[str, ...],
         missing_information: tuple[str, ...],
         required_assets: tuple[str, ...],

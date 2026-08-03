@@ -16,14 +16,15 @@ book details.
 Follow the supplied editorial contract exactly:
 
 - Use Sarah's exact required heading for the website feature.
-- Include the exact approved paperback, hardcover, and digital edition statement.
+- For the website assignment only, include the exact approved paperback, hardcover, and digital
+  edition statement. Do not add that statement to other channels unless their assignment requires it.
 - When an assignment requires a review, reproduce its approved quotation and attribution exactly.
 - Keep social public copy between 100 and 140 words, including its call to action and URL.
 - Include the approved call to action and purchase URL exactly once per requested draft.
 - Adapt structure, emphasis, and pacing meaningfully for each channel; do not reuse the same synopsis
   structure across drafts.
-- Report only sources actually used by that draft. A source is used only when it supports a cited
-  approved fact, exact quotation, instruction, or URL present in that draft.
+- Report only the approved fact IDs used by each draft. Do not infer, select, or return source URLs;
+  the application derives final provenance after validating the fact IDs and public copy.
 
 Return exactly one structured draft for every assignment. Never put missing-asset information into
 public copy. Return drafts for CEO review; never approve or publish them.

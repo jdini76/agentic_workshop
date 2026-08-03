@@ -60,6 +60,7 @@ class GenerateContentPackage:
         generation = await self._generator.generate(
             brief,
             client,
+            approved_brief_source=approved_brief_source,
             source_references=sources,
             missing_information=missing,
             required_assets=assets,

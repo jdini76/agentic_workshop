@@ -254,6 +254,7 @@ def test_first_smoke_fixture_is_rejected_for_all_observed_editorial_failures() -
             generator.generate(
                 brief,
                 client,
+                approved_brief_source=APPROVED_BRIEF_SOURCE,
                 source_references=sources,
                 missing_information=brief.missing_inputs,
                 required_assets=brief.missing_inputs,
@@ -265,8 +266,6 @@ def test_first_smoke_fixture_is_rejected_for_all_observed_editorial_failures() -
     assert "required exact heading" in message
     assert "edition format statement" in message
     assert "100-140 words" in message
-    assert "reported sources do not match" in message
-    assert "same fact selection" in message
 
 
 def test_corrected_website_and_social_fixtures_pass_editorial_validation() -> None:
@@ -281,6 +280,7 @@ def test_corrected_website_and_social_fixtures_pass_editorial_validation() -> No
         generator.generate(
             brief,
             client,
+            approved_brief_source=APPROVED_BRIEF_SOURCE,
             source_references=sources,
             missing_information=brief.missing_inputs,
             required_assets=brief.missing_inputs,
@@ -291,6 +291,81 @@ def test_corrected_website_and_social_fixtures_pass_editorial_validation() -> No
     assert all(draft.state == "draft" for draft in result.drafts)
     assert all("Draft note" not in draft.body for draft in result.drafts)
     assert 100 <= len(result.drafts[1].body.split()) <= 140
+    website, social = result.drafts
+    assert website.source_references == (
+        APPROVED_BRIEF_SOURCE,
+        "clients/jordan-and-the-fosters.v1.json",
+        "https://www.amazon.com/gp/aw/d/B0D5BT1XDZ",
+        "https://readersfavorite.com/book-review/jordan-and-the-fosters",
+    )
+    assert social.source_references == (
+        APPROVED_BRIEF_SOURCE,
+        "clients/jordan-and-the-fosters.v1.json",
+        "https://www.amazon.com/gp/aw/d/B0D5BT1XDZ",
+    )
+
+
+def test_provenance_is_application_owned_and_identical_fact_ids_are_allowed() -> None:
+    brief, client, prompt = model_generator_inputs()
+    payload = fixture_payload("openai_corrected_drafts.json")
+    payload["drafts"][1]["approved_fact_ids"] = payload["drafts"][0][
+        "approved_fact_ids"
+    ]
+    generator = ModelContentDraftGenerator(StructuredFakeModel(payload), instructions=prompt)
+
+    result = asyncio.run(
+        generator.generate(
+            brief,
+            client,
+            approved_brief_source=APPROVED_BRIEF_SOURCE,
+            source_references=brief.source_references,
+            missing_information=brief.missing_inputs,
+            required_assets=brief.missing_inputs,
+        )
+    )
+
+    assert result.drafts[0].approved_facts_used == result.drafts[1].approved_facts_used
+    assert "https://readersfavorite.com/book-review/jordan-and-the-fosters" not in (
+        result.drafts[1].source_references
+    )
+
+
+def test_invented_fact_id_is_rejected_before_provenance_is_derived() -> None:
+    brief, client, prompt = model_generator_inputs()
+    payload = fixture_payload("openai_corrected_drafts.json")
+    payload["drafts"][0]["approved_fact_ids"].append("fact-invented")
+    generator = ModelContentDraftGenerator(StructuredFakeModel(payload), instructions=prompt)
+
+    with pytest.raises(ModelMalformedOutputError, match="invented or unauthorized fact ID"):
+        asyncio.run(
+            generator.generate(
+                brief,
+                client,
+                approved_brief_source=APPROVED_BRIEF_SOURCE,
+                source_references=brief.source_references,
+                missing_information=brief.missing_inputs,
+                required_assets=brief.missing_inputs,
+            )
+        )
+
+
+def test_model_supplied_source_urls_are_not_accepted() -> None:
+    brief, client, prompt = model_generator_inputs()
+    payload = fixture_payload("openai_corrected_drafts.json")
+    payload["drafts"][0]["source_references"] = ["https://invented.example/source"]
+    generator = ModelContentDraftGenerator(StructuredFakeModel(payload), instructions=prompt)
+
+    with pytest.raises(ModelMalformedOutputError, match="failed Pydantic validation"):
+        asyncio.run(
+            generator.generate(
+                brief,
+                client,
+                approved_brief_source=APPROVED_BRIEF_SOURCE,
+                source_references=brief.source_references,
+                missing_information=brief.missing_inputs,
+                required_assets=brief.missing_inputs,
+            )
+        )
 
 
 def test_required_review_and_duplicate_cta_rules_are_enforced() -> None:
@@ -316,6 +391,7 @@ def test_required_review_and_duplicate_cta_rules_are_enforced() -> None:
             generator.generate(
                 required_review_brief,
                 client,
+                approved_brief_source=APPROVED_BRIEF_SOURCE,
                 source_references=sources,
                 missing_information=brief.missing_inputs,
                 required_assets=brief.missing_inputs,
@@ -333,6 +409,7 @@ def test_required_review_and_duplicate_cta_rules_are_enforced() -> None:
             duplicate_generator.generate(
                 brief,
                 client,
+                approved_brief_source=APPROVED_BRIEF_SOURCE,
                 source_references=(
                     *brief.source_references,
                     client.source_reference,
