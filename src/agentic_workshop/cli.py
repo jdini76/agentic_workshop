@@ -12,6 +12,10 @@ from agentic_workshop.adapters.deterministic_content import (
     DeterministicContentDraftGenerator,
 )
 from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
+from agentic_workshop.adapters.model_attempts import (
+    ModelAttemptRecorder,
+    RetainedAttemptLanguageModel,
+)
 from agentic_workshop.adapters.model_content import ModelContentDraftGenerator
 from agentic_workshop.adapters.openai_language_model import OpenAILanguageModel
 from agentic_workshop.application.content import ContentPackageError, GenerateContentPackage
@@ -23,6 +27,7 @@ from agentic_workshop.application.marketing import (
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
+from agentic_workshop.domain.model_attempts import UntrustedModelAttempt
 from agentic_workshop.ports.content_generation import ContentDraftGenerator
 from agentic_workshop.ports.models import LanguageModelError
 from agentic_workshop.presentation.content_markdown import render_content_package
@@ -65,6 +70,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_openai_settings(live)
     live.add_argument("--confirm-paid-call", action="store_true", required=True)
 
+    revalidate = subparsers.add_parser(
+        "revalidate-attempt",
+        help="revalidate a retained untrusted attempt without a model request",
+    )
+    revalidate.add_argument("attempt_file", type=Path)
+    revalidate.add_argument("brief_file", type=Path)
+    revalidate.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
+    revalidate.add_argument("--artifact-root", type=Path, default=None)
+
     review = subparsers.add_parser("review", help="review an existing brief JSON file")
     review.add_argument("brief_file", type=Path)
     decision = review.add_mutually_exclusive_group(required=True)
@@ -83,6 +97,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             return _generate_content_package(args)
         if args.command == "live-smoke-openai":
             return _generate_content_package(args, force_openai=True)
+        if args.command == "revalidate-attempt":
+            return _revalidate_attempt(args)
         return _review(args)
     except (
         ContentPackageError,
@@ -155,21 +171,31 @@ def _generate_content_package(
     use_openai = force_openai or args.generator == "openai"
     if use_openai and not args.confirm_paid_call:
         raise ValueError("--confirm-paid-call is required before any paid OpenAI request")
-    generator = asyncio.run(_content_generator(args, loader, use_openai=use_openai))
-    package = asyncio.run(
-        GenerateContentPackage(generator).execute(
-            brief,
-            client,
-            approved_brief_source=str(args.brief_file),
-        )
-    )
     artifact_root = args.artifact_root
     if use_openai and artifact_root == DEFAULT_CONTENT_ARTIFACT_ROOT:
         artifact_root = DEFAULT_MODEL_ARTIFACT_ROOT
+    recorder = ModelAttemptRecorder(artifact_root / "attempts") if use_openai else None
+    generator = asyncio.run(
+        _content_generator(args, loader, use_openai=use_openai, recorder=recorder)
+    )
+    try:
+        package = asyncio.run(
+            GenerateContentPackage(generator).execute(
+                brief,
+                client,
+                approved_brief_source=str(args.brief_file),
+            )
+        )
+    except Exception as error:
+        if recorder is not None and recorder.path is not None:
+            recorder.rejected((str(error),))
+        raise
     suffix = "-openai-smoke" if force_openai else ""
     json_path = artifact_root / f"{package.package_id}{suffix}.json"
     markdown_path = artifact_root / f"{package.package_id}{suffix}.md"
     _write_content_artifacts(package, json_path, markdown_path)
+    if recorder is not None:
+        recorder.accepted(json_path)
     print(json_path)
     print(markdown_path)
     return 0
@@ -203,6 +229,7 @@ async def _content_generator(
     loader: FilesystemResourceLoader,
     *,
     use_openai: bool,
+    recorder: ModelAttemptRecorder | None = None,
 ) -> ContentDraftGenerator:
     if not use_openai:
         return DeterministicContentDraftGenerator()
@@ -214,12 +241,58 @@ async def _content_generator(
         timeout_seconds=args.timeout_seconds,
         reasoning_effort=args.reasoning_effort,
         max_output_tokens=args.max_output_tokens,
+        attempt_recorder=recorder,
     )
-    return ModelContentDraftGenerator(model, instructions=instructions)
+    return ModelContentDraftGenerator(
+        model,
+        instructions=instructions,
+        attempt_recorder=recorder,
+    )
+
+
+def _revalidate_attempt(args: argparse.Namespace) -> int:
+    attempt = UntrustedModelAttempt.model_validate_json(
+        args.attempt_file.read_text(encoding="utf-8")
+    )
+    brief = WeeklyMarketingBrief.model_validate_json(
+        args.brief_file.read_text(encoding="utf-8")
+    )
+    loader = FilesystemResourceLoader(args.resource_root)
+    client_ref = CLIENT_RESOURCE_TEMPLATE.format(client_id=brief.client_id)
+    client = ClientProfile.model_validate_json(asyncio.run(loader.load_text(client_ref)))
+    instructions = asyncio.run(loader.load_text(CASEY_PROMPT_RESOURCE))
+    recorder = ModelAttemptRecorder(args.attempt_file.parent)
+    recorder.attach(args.attempt_file)
+    generator = ModelContentDraftGenerator(
+        RetainedAttemptLanguageModel(attempt),
+        instructions=instructions,
+    )
+    try:
+        package = asyncio.run(
+            GenerateContentPackage(generator).execute(
+                brief,
+                client,
+                approved_brief_source=str(args.brief_file),
+            )
+        )
+        artifact_root = args.artifact_root or args.attempt_file.parent.parent / "revalidated"
+        stem = f"{package.package_id}-revalidated-{attempt.attempt_id[:8]}"
+        json_path = artifact_root / f"{stem}.json"
+        markdown_path = artifact_root / f"{stem}.md"
+        _write_content_artifacts(package, json_path, markdown_path)
+        recorder.accepted(json_path)
+    except Exception as error:
+        recorder.rejected((str(error),))
+        raise
+    print(json_path)
+    print(markdown_path)
+    return 0
 
 
 def _load_review_artifact(path: Path) -> WeeklyMarketingBrief | ContentPackage:
     raw = path.read_text(encoding="utf-8")
+    if '"record_type"' in raw and '"untrusted_model_attempt"' in raw:
+        raise ValueError("untrusted model attempts cannot be reviewed or approved")
     try:
         return WeeklyMarketingBrief.model_validate_json(raw)
     except ValidationError:

@@ -9,11 +9,13 @@ import pytest
 
 from agentic_workshop.adapters import openai_language_model
 from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
+from agentic_workshop.adapters.model_attempts import ModelAttemptRecorder
 from agentic_workshop.adapters.model_content import ModelContentDraftGenerator
 from agentic_workshop.adapters.openai_language_model import OpenAILanguageModel
 from agentic_workshop.cli import PACKAGE_RESOURCE_ROOT, build_parser
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.marketing import WeeklyMarketingBrief
+from agentic_workshop.domain.model_attempts import AttemptValidationStatus, UntrustedModelAttempt
 from agentic_workshop.ports.models import (
     LanguageModel,
     ModelAuthenticationError,
@@ -136,6 +138,41 @@ def test_openai_adapter_rejects_malformed_structured_output() -> None:
 
     with pytest.raises(ModelMalformedOutputError):
         asyncio.run(model.complete(request))
+
+
+def test_completed_malformed_openai_response_is_retained_before_parsing(
+    tmp_path: Path,
+) -> None:
+    response = SimpleNamespace(
+        status="completed",
+        output_text="not-json",
+        model="gpt-5.6-terra",
+        id="resp_malformed_retained",
+        usage=None,
+    )
+    recorder = ModelAttemptRecorder(tmp_path / "attempts")
+    model = OpenAILanguageModel(
+        MockClient(response),
+        model="gpt-5.6-terra",
+        reasoning_effort="low",
+        max_output_tokens=4000,
+        attempt_recorder=recorder,
+    )
+    request = ModelRequest(
+        messages=(ModelMessage(role="user", content="test content"),),
+        response_schema={"type": "object"},
+    )
+
+    with pytest.raises(ModelMalformedOutputError):
+        asyncio.run(model.complete(request))
+
+    assert recorder.path is not None
+    attempt = UntrustedModelAttempt.model_validate_json(
+        recorder.path.read_text(encoding="utf-8")
+    )
+    assert attempt.validation_status is AttemptValidationStatus.REJECTED
+    assert attempt.raw_structured_output == {"unparsed_output": "not-json"}
+    assert attempt.response_id == "resp_malformed_retained"
 
 
 @pytest.mark.parametrize(

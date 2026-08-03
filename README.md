@@ -147,6 +147,17 @@ selected with `content-package --generator openai --confirm-paid-call`; model ou
 `artifacts/model-content-packages/` by default. All generated packages remain drafts and retain the
 same approval, factual-provenance, assignment-coverage, URL, and review-quotation validation gates.
 
+Every completed live response is first retained as a local, untrusted diagnostic JSON record under
+the selected artifact root's `attempts/` directory. See
+[the retention policy](docs/model-attempt-retention.md). Revalidate one with current local validators
+without an API call:
+
+```shell
+agentic-workshop revalidate-attempt <attempt.json> <approved-brief.json>
+```
+
+Revalidation writes a separate draft package and never approves or publishes it.
+
 ## Version-controlled resources
 
 Employee definitions, client profiles, prompts, SOPs, and policies live under

@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 
 from pydantic import ValidationError, model_validator
 
+from agentic_workshop.adapters.model_attempts import ModelAttemptRecorder
 from agentic_workshop.domain.base import DomainModel
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import (
@@ -21,6 +22,7 @@ from agentic_workshop.ports.models import (
     ModelMalformedOutputError,
     ModelMessage,
     ModelRequest,
+    ModelResponse,
 )
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()]+")
@@ -62,9 +64,16 @@ class ModelDraftBatch(DomainModel):
 class ModelContentDraftGenerator(ContentDraftGenerator):
     """Ask a model for copy while retaining provenance and draft state in application code."""
 
-    def __init__(self, model: LanguageModel, *, instructions: str) -> None:
+    def __init__(
+        self,
+        model: LanguageModel,
+        *,
+        instructions: str,
+        attempt_recorder: ModelAttemptRecorder | None = None,
+    ) -> None:
         self._model = model
         self._instructions = instructions
+        self._attempt_recorder = attempt_recorder
 
     async def generate(
         self,
@@ -87,14 +96,17 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
             response_schema=ModelDraftBatch.model_json_schema(),
         )
         response = await self._model.complete(request)
+        self._record_received(response)
         if response.structured_output is None:
+            self._record_rejected(("model did not return structured content drafts",))
             raise ModelMalformedOutputError(
                 "model did not return structured content drafts",
                 provider="configured-model",
             )
         try:
             proposals = ModelDraftBatch.model_validate(response.structured_output)
-        except ValidationError:
+        except ValidationError as error:
+            self._record_rejected(tuple(item["msg"] for item in error.errors()))
             raise ModelMalformedOutputError(
                 "model content drafts failed Pydantic validation",
                 provider="configured-model",
@@ -107,6 +119,7 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
             approved_brief_source,
         )
         if violations:
+            self._record_rejected(violations)
             raise ModelMalformedOutputError(
                 "model content failed editorial validation: " + "; ".join(violations),
                 provider="configured-model",
@@ -133,6 +146,25 @@ class ModelContentDraftGenerator(ContentDraftGenerator):
                 latency_ms=self._non_negative_int(metadata.get("latency_ms")),
             ),
         )
+
+    def _record_received(self, response: ModelResponse) -> None:
+        if self._attempt_recorder is None:
+            return
+        if self._attempt_recorder.path is not None:
+            return
+        metadata = response.provider_metadata
+        self._attempt_recorder.received(
+            provider=self._optional_string(metadata.get("provider")) or "configured-model",
+            model=self._optional_string(metadata.get("model")) or "unknown-model",
+            response_id=self._optional_string(metadata.get("response_id")) or "unknown-response",
+            usage=response.usage,
+            latency_ms=self._non_negative_int(metadata.get("latency_ms")),
+            raw_structured_output=response.structured_output or {},
+        )
+
+    def _record_rejected(self, errors: tuple[str, ...]) -> None:
+        if self._attempt_recorder is not None:
+            self._attempt_recorder.rejected(errors)
 
     @classmethod
     def _request_payload(
