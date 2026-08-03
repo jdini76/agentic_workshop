@@ -150,6 +150,18 @@ official website, social posts, email marketing, campaign previews, and Casey's 
 recommendations. Casey recommends this metadata-clean derivative instead of the metadata-bearing
 original. Publication and external delivery remain separate human-authorized actions.
 
+Generate a static, local-only campaign preview from an approved content package:
+
+```console
+agentic-workshop campaign-preview artifacts/visual-enabled/2026-08-03/PACKAGE.json
+```
+
+Preview output is restricted to the ignored `artifacts/campaign-previews/` tree. The command rejects
+unapproved packages, unapproved or invalid assets, original images, and channel-use mismatches. It
+copies the validated metadata-clean derivative beside an escaped static HTML file; it does not embed
+image bytes, start a server, contact external destinations, or expose publish/upload/send actions.
+Existing previews are preserved unless `--overwrite` is supplied explicitly.
+
 Content drafting defaults to an async deterministic adapter. The application service depends on
 the provider-neutral `ContentDraftGenerator` port and independently enforces approval, assignment
 coverage, client matching, approved-fact provenance, brand voice, and source references. A future

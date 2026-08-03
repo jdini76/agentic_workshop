@@ -30,6 +30,7 @@ from agentic_workshop.application.marketing import (
     GenerateWeeklyMarketingBrief,
     MarketingBriefError,
 )
+from agentic_workshop.application.preview import GenerateCampaignPreview
 from agentic_workshop.domain.assets import (
     AssetApprovalState,
     AssetRecommendation,
@@ -50,6 +51,7 @@ DEFAULT_ARTIFACT_ROOT = Path("artifacts") / "weekly-briefs"
 DEFAULT_CONTENT_ARTIFACT_ROOT = Path("artifacts") / "content-packages"
 DEFAULT_MODEL_ARTIFACT_ROOT = Path("artifacts") / "model-content-packages"
 DEFAULT_LIVE_SMOKE_ARTIFACT_ROOT = Path("artifacts") / "live-smoke" / "openai"
+DEFAULT_PREVIEW_ROOT = Path("artifacts") / "campaign-previews"
 CASEY_PROMPT_RESOURCE = "prompts/casey-content-creator.v1.md"
 ASSET_MANIFEST_TEMPLATE = "client-assets/{client_id}.v1.json"
 
@@ -112,6 +114,15 @@ def build_parser() -> argparse.ArgumentParser:
     asset_decision.add_argument("--approve", action="store_true")
     asset_decision.add_argument("--request-revision", metavar="INSTRUCTIONS")
 
+    preview = subparsers.add_parser(
+        "campaign-preview", help="generate a local static preview from an approved package"
+    )
+    preview.add_argument("package_file", type=Path)
+    preview.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
+    preview.add_argument("--repository-root", type=Path, default=Path.cwd())
+    preview.add_argument("--preview-root", type=Path, default=DEFAULT_PREVIEW_ROOT)
+    preview.add_argument("--overwrite", action="store_true")
+
     review = subparsers.add_parser("review", help="review an existing brief JSON file")
     review.add_argument("brief_file", type=Path)
     decision = review.add_mutually_exclusive_group(required=True)
@@ -136,6 +147,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             return _asset_inventory(args)
         if args.command == "asset-review":
             return _asset_review(args)
+        if args.command == "campaign-preview":
+            return _campaign_preview(args)
         return _review(args)
     except (
         ContentPackageError,
@@ -400,6 +413,30 @@ def _asset_review(args: argparse.Namespace) -> int:
     temporary.write_text(updated.model_dump_json(indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, args.manifest_file)
     print(args.manifest_file)
+    return 0
+
+
+def _campaign_preview(args: argparse.Namespace) -> int:
+    package = ContentPackage.model_validate_json(
+        args.package_file.read_text(encoding="utf-8")
+    )
+    loader = FilesystemResourceLoader(args.resource_root)
+    manifest_ref = ASSET_MANIFEST_TEMPLATE.format(client_id=package.client_id)
+    client_ref = CLIENT_RESOURCE_TEMPLATE.format(client_id=package.client_id)
+    manifest = ClientAssetManifest.model_validate_json(
+        asyncio.run(loader.load_text(manifest_ref))
+    )
+    client = ClientProfile.model_validate_json(asyncio.run(loader.load_text(client_ref)))
+    preview = asyncio.run(
+        GenerateCampaignPreview(args.repository_root, args.preview_root).execute(
+            package,
+            manifest,
+            approved_destinations=tuple(link.url for link in client.purchase_links),
+            overwrite=args.overwrite,
+        )
+    )
+    print(preview.html_path)
+    print(preview.asset_path)
     return 0
 
 
