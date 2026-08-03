@@ -100,6 +100,45 @@ agentic-workshop review \
 
 Package approval is not publication authorization. No command in this slice publishes content.
 
+### Governed client visual assets
+
+Original client assets are local-only and live under
+`assets/clients/<client-id>/originals/`. That directory is Git-ignored because originals may contain
+private embedded metadata or have distribution rights that differ from the public source-code
+license. Never download a substitute from a website, retailer, or search result.
+
+The versioned manifest at
+`src/agentic_workshop/resources/client-assets/jordan-and-the-fosters.v1.json` records the official
+front cover's expected path, PNG dimensions, byte size, SHA-256 checksum, source, approval state,
+allowed use, transformation permissions, attribution status, and restrictions. It deliberately does
+not reproduce embedded Canva identifiers.
+
+Validate the local inventory without modifying the original:
+
+```console
+agentic-workshop asset-inventory jordan-and-the-fosters --repository-root .
+```
+
+Review a draft or revision-requested manifest entry locally:
+
+```console
+agentic-workshop asset-review path/to/manifest.json ASSET_ID --repository-root . --approve
+agentic-workshop asset-review path/to/manifest.json ASSET_ID --repository-root . \
+  --request-revision "Revision instructions"
+```
+
+Approval first verifies path containment, file signature, format, dimensions, byte size, and checksum.
+Casey may place an approved, verified asset ID in `ContentPackage.asset_recommendations`; this does
+not embed, transform, upload, distribute, externally transmit, or publish the file. Missing or altered
+originals produce an explicit unavailable recommendation, and text-only generation continues. There
+is no website, retailer, or generated-image fallback. Clients with no manifest or no asset approved
+for recommendation continue through the existing text-only workflow with an empty recommendation
+list.
+
+Future marketing derivatives must be stored separately from originals and require their own asset
+ID, checksum, manifest entry, approval state, uses, restrictions, and provenance. The original must
+never be overwritten or sanitized in place.
+
 Content drafting defaults to an async deterministic adapter. The application service depends on
 the provider-neutral `ContentDraftGenerator` port and independently enforces approval, assignment
 coverage, client matching, approved-fact provenance, brand voice, and source references. A future

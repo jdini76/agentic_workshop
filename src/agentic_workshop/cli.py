@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+import json
+import os
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
@@ -11,21 +13,31 @@ from pydantic import ValidationError
 from agentic_workshop.adapters.deterministic_content import (
     DeterministicContentDraftGenerator,
 )
-from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
+from agentic_workshop.adapters.filesystem_resources import (
+    FilesystemResourceLoader,
+    ResourceNotFoundError,
+)
 from agentic_workshop.adapters.model_attempts import (
     ModelAttemptRecorder,
     RetainedAttemptLanguageModel,
 )
 from agentic_workshop.adapters.model_content import ModelContentDraftGenerator
 from agentic_workshop.adapters.openai_language_model import OpenAILanguageModel
+from agentic_workshop.application.assets import ClientAssetInventory
 from agentic_workshop.application.content import ContentPackageError, GenerateContentPackage
 from agentic_workshop.application.marketing import (
     CLIENT_RESOURCE_TEMPLATE,
     GenerateWeeklyMarketingBrief,
     MarketingBriefError,
 )
+from agentic_workshop.domain.assets import (
+    AssetApprovalState,
+    AssetRecommendation,
+    ClientAssetManifest,
+)
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import ContentPackage
+from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
 from agentic_workshop.domain.model_attempts import UntrustedModelAttempt
 from agentic_workshop.ports.content_generation import ContentDraftGenerator
@@ -39,6 +51,7 @@ DEFAULT_CONTENT_ARTIFACT_ROOT = Path("artifacts") / "content-packages"
 DEFAULT_MODEL_ARTIFACT_ROOT = Path("artifacts") / "model-content-packages"
 DEFAULT_LIVE_SMOKE_ARTIFACT_ROOT = Path("artifacts") / "live-smoke" / "openai"
 CASEY_PROMPT_RESOURCE = "prompts/casey-content-creator.v1.md"
+ASSET_MANIFEST_TEMPLATE = "client-assets/{client_id}.v1.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     content.add_argument("brief_file", type=Path)
     content.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
     content.add_argument("--artifact-root", type=Path, default=DEFAULT_CONTENT_ARTIFACT_ROOT)
+    content.add_argument("--repository-root", type=Path, default=Path.cwd())
     _add_model_options(content)
 
     live = subparsers.add_parser(
@@ -67,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("brief_file", type=Path)
     live.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
     live.add_argument("--artifact-root", type=Path, default=DEFAULT_LIVE_SMOKE_ARTIFACT_ROOT)
+    live.add_argument("--repository-root", type=Path, default=Path.cwd())
     _add_openai_settings(live)
     live.add_argument("--confirm-paid-call", action="store_true", required=True)
 
@@ -78,6 +93,24 @@ def build_parser() -> argparse.ArgumentParser:
     revalidate.add_argument("brief_file", type=Path)
     revalidate.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
     revalidate.add_argument("--artifact-root", type=Path, default=None)
+    revalidate.add_argument("--repository-root", type=Path, default=Path.cwd())
+
+    inventory = subparsers.add_parser(
+        "asset-inventory", help="validate a client's local asset manifest"
+    )
+    inventory.add_argument("client_id")
+    inventory.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
+    inventory.add_argument("--repository-root", type=Path, default=Path.cwd())
+
+    asset_review = subparsers.add_parser(
+        "asset-review", help="approve or request revision of a manifest asset"
+    )
+    asset_review.add_argument("manifest_file", type=Path)
+    asset_review.add_argument("asset_id")
+    asset_review.add_argument("--repository-root", type=Path, default=Path.cwd())
+    asset_decision = asset_review.add_mutually_exclusive_group(required=True)
+    asset_decision.add_argument("--approve", action="store_true")
+    asset_decision.add_argument("--request-revision", metavar="INSTRUCTIONS")
 
     review = subparsers.add_parser("review", help="review an existing brief JSON file")
     review.add_argument("brief_file", type=Path)
@@ -99,6 +132,10 @@ def run(argv: Sequence[str] | None = None) -> int:
             return _generate_content_package(args, force_openai=True)
         if args.command == "revalidate-attempt":
             return _revalidate_attempt(args)
+        if args.command == "asset-inventory":
+            return _asset_inventory(args)
+        if args.command == "asset-review":
+            return _asset_review(args)
         return _review(args)
     except (
         ContentPackageError,
@@ -178,9 +215,14 @@ def _generate_content_package(
     generator = asyncio.run(
         _content_generator(args, loader, use_openai=use_openai, recorder=recorder)
     )
+    asset_recommendations = asyncio.run(
+        _asset_recommendations(loader, client.id, args.repository_root)
+    )
     try:
         package = asyncio.run(
-            GenerateContentPackage(generator).execute(
+            GenerateContentPackage(
+                generator, asset_recommendations=asset_recommendations
+            ).execute(
                 brief,
                 client,
                 approved_brief_source=str(args.brief_file),
@@ -267,9 +309,14 @@ def _revalidate_attempt(args: argparse.Namespace) -> int:
         RetainedAttemptLanguageModel(attempt),
         instructions=instructions,
     )
+    asset_recommendations = asyncio.run(
+        _asset_recommendations(loader, client.id, args.repository_root)
+    )
     try:
         package = asyncio.run(
-            GenerateContentPackage(generator).execute(
+            GenerateContentPackage(
+                generator, asset_recommendations=asset_recommendations
+            ).execute(
                 brief,
                 client,
                 approved_brief_source=str(args.brief_file),
@@ -286,6 +333,73 @@ def _revalidate_attempt(args: argparse.Namespace) -> int:
         raise
     print(json_path)
     print(markdown_path)
+    return 0
+
+
+async def _asset_recommendations(
+    loader: FilesystemResourceLoader,
+    client_id: ClientId,
+    repository_root: Path,
+) -> tuple[AssetRecommendation, ...]:
+    manifest_ref = ASSET_MANIFEST_TEMPLATE.format(client_id=client_id)
+    try:
+        raw_manifest = await loader.load_text(manifest_ref)
+    except ResourceNotFoundError:
+        return ()
+    manifest = ClientAssetManifest.model_validate_json(raw_manifest)
+    return await ClientAssetInventory(repository_root).recommendations(manifest)
+
+
+def _asset_inventory(args: argparse.Namespace) -> int:
+    loader = FilesystemResourceLoader(args.resource_root)
+    manifest_ref = ASSET_MANIFEST_TEMPLATE.format(client_id=args.client_id)
+    manifest = ClientAssetManifest.model_validate_json(
+        asyncio.run(loader.load_text(manifest_ref))
+    )
+    results = asyncio.run(ClientAssetInventory(args.repository_root).inventory(manifest))
+    payload = {
+        "manifest": manifest_ref,
+        "client_id": str(manifest.client_id),
+        "results": [result.model_dump(mode="json") for result in results],
+    }
+    print(json.dumps(payload, indent=2))
+    return 0 if all(result.valid for result in results) else 1
+
+
+def _asset_review(args: argparse.Namespace) -> int:
+    manifest = ClientAssetManifest.model_validate_json(
+        args.manifest_file.read_text(encoding="utf-8")
+    )
+    matches = [asset for asset in manifest.assets if asset.asset_id == args.asset_id]
+    if not matches:
+        raise ValueError(f"asset ID not found in manifest: {args.asset_id}")
+    target = matches[0]
+    data = target.model_dump(mode="json")
+    if args.approve:
+        result = asyncio.run(ClientAssetInventory(args.repository_root).validate(target))
+        if not result.valid:
+            raise ValueError(f"cannot approve invalid asset: {result.diagnostic}")
+        data.update(approval_state=AssetApprovalState.APPROVED, revision_note=None)
+    else:
+        data.update(
+            approval_state=AssetApprovalState.REVISION_REQUESTED,
+            revision_note=args.request_revision,
+        )
+    updated_assets = [
+        data if asset.asset_id == args.asset_id else asset.model_dump(mode="json")
+        for asset in manifest.assets
+    ]
+    updated = ClientAssetManifest.model_validate(
+        {
+            **manifest.model_dump(mode="json"),
+            "manifest_revision": manifest.manifest_revision + 1,
+            "assets": updated_assets,
+        }
+    )
+    temporary = args.manifest_file.with_suffix(args.manifest_file.suffix + ".tmp")
+    temporary.write_text(updated.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, args.manifest_file)
+    print(args.manifest_file)
     return 0
 
 

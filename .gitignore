@@ -15,3 +15,4 @@ build/
 dist/
 *.egg-info/
 artifacts/
+assets/clients/*/originals/

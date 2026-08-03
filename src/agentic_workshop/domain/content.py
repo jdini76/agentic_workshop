@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from agentic_workshop.domain.assets import AssetRecommendation
 from agentic_workshop.domain.base import DomainModel
 from agentic_workshop.domain.identity import ClientId, EmployeeId, NonBlank
 from agentic_workshop.domain.marketing import BriefApprovalState
@@ -62,6 +63,7 @@ class ContentPackage(DomainModel):
     assumptions: tuple[NonBlank, ...]
     missing_assets_or_information: tuple[NonBlank, ...]
     required_assets: tuple[NonBlank, ...]
+    asset_recommendations: tuple[AssetRecommendation, ...] = ()
     generation_metadata: ContentGenerationMetadata = ContentGenerationMetadata(
         generator="deterministic"
     )

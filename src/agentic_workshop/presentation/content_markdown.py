@@ -62,6 +62,22 @@ def render_content_package(package: ContentPackage) -> str:
         package.missing_assets_or_information,
     )
     _append_list(lines, "Package required assets", package.required_assets)
+    lines.extend(["## Asset recommendations", ""])
+    for recommendation in package.asset_recommendations:
+        lines.extend(
+            [
+                f"- Asset ID: `{recommendation.asset_id}`",
+                f"  - Type: `{recommendation.asset_type.value}`",
+                f"  - Availability: **{recommendation.availability}**",
+                f"  - Repository path: `{recommendation.repository_path}`",
+                f"  - Manifest: `{recommendation.manifest_source}`",
+                f"  - Diagnostic: {recommendation.diagnostic}",
+                "  - Metadata recommendation only; no embedding or publication authorized.",
+            ]
+        )
+    if not package.asset_recommendations:
+        lines.append("- None; text-only content remains supported.")
+    lines.append("")
     if package.revision_note is not None:
         lines.extend(["## Revision note", "", package.revision_note, ""])
     return "\n".join(lines)

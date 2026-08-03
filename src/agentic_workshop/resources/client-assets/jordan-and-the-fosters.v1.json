@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "manifest_revision": 1,
+  "client_id": "jordan-and-the-fosters",
+  "source_reference": "client-assets/jordan-and-the-fosters.v1.json",
+  "assets": [
+    {
+      "asset_id": "jordan-and-the-fosters-front-cover",
+      "asset_version": 1,
+      "name": "Official front cover",
+      "description": "CEO-supplied official front-cover image for Jordan and the Fosters",
+      "asset_type": "front_cover",
+      "repository_path": "assets/clients/jordan-and-the-fosters/originals/JATF_Front_Cover.png",
+      "file_format": "png",
+      "dimensions": {
+        "width_px": 1970,
+        "height_px": 2000
+      },
+      "file_size_bytes": 4612659,
+      "checksum": {
+        "algorithm": "sha256",
+        "value": "3e63da30359b5c0ff1a4df8b49ac4fa0cdc685f2ac277f63179a1de2df827b5b"
+      },
+      "source": {
+        "source_type": "ceo_supplied_local_file",
+        "description": "Official cover supplied locally by the CEO"
+      },
+      "approval_state": "approved",
+      "revision_note": null,
+      "approved_uses": [
+        "content_package_asset_recommendation"
+      ],
+      "permitted_transformations": [],
+      "attribution": {
+        "text": null,
+        "required": false,
+        "status": "not_confirmed"
+      },
+      "restrictions": [
+        "Preserve the original file unchanged",
+        "Do not crop, resize, recolor, rotate, compress, or change the file format",
+        "Do not add, remove, replace, or reposition text",
+        "Do not remove or alter cover elements",
+        "Do not generate derivative or replacement artwork",
+        "Do not imitate the cover artwork or illustration style",
+        "Do not strip or modify embedded metadata",
+        "Do not embed, upload, publish, distribute, or externally transmit automatically",
+        "Casey may recommend this asset in content-package metadata only",
+        "Any broader public use requires an explicitly approved use in this manifest",
+        "The file must pass path, type, dimensions, file-size, and checksum validation before recommendation",
+        "Embedded metadata is inventory information only and is not an approved marketing fact",
+        "Any future derivative requires its own asset ID, checksum, manifest entry, approval state, uses, restrictions, and provenance"
+      ]
+    }
+  ]
+}

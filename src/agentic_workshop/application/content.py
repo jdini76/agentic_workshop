@@ -2,6 +2,7 @@
 
 from collections import Counter
 
+from agentic_workshop.domain.assets import AssetRecommendation
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import ContentDraft, ContentPackage
 from agentic_workshop.domain.identity import EmployeeId
@@ -30,8 +31,14 @@ class InvalidGeneratedDraftsError(ContentPackageError):
 class GenerateContentPackage:
     """Validate inputs and generator output, then assemble a reviewable draft package."""
 
-    def __init__(self, generator: ContentDraftGenerator) -> None:
+    def __init__(
+        self,
+        generator: ContentDraftGenerator,
+        *,
+        asset_recommendations: tuple[AssetRecommendation, ...] = (),
+    ) -> None:
         self._generator = generator
+        self._asset_recommendations = asset_recommendations
 
     async def execute(
         self,
@@ -87,6 +94,7 @@ class GenerateContentPackage:
             ),
             missing_assets_or_information=missing,
             required_assets=assets,
+            asset_recommendations=self._asset_recommendations,
             generation_metadata=generation.metadata,
         )
 
