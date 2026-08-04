@@ -1,0 +1,89 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #292522;
+  background: #f5f1eb;
+}
+
+body {
+  max-width: 920px;
+  margin: auto;
+  padding: 28px;
+}
+
+section,
+form {
+  margin: 20px 0;
+  padding: 22px;
+  border-radius: 12px;
+  background: white;
+}
+
+.local {
+  padding: 12px;
+  color: #fff;
+  background: #2f2925;
+  font-weight: 700;
+}
+
+.status {
+  display: inline-block;
+  padding: 5px 10px;
+  background: #eee6da;
+}
+
+.success {
+  padding: 14px;
+  background: #dcefdc;
+}
+
+.error {
+  padding: 14px;
+  background: #f6dddd;
+}
+
+dt {
+  margin-top: 12px;
+  font-weight: 700;
+}
+
+dd {
+  margin-left: 0;
+}
+
+.button,
+button {
+  display: inline-block;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 7px;
+  color: white;
+  background: #7a3d24;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.secondary {
+  background: #57504b;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+label {
+  display: block;
+  margin-bottom: 7px;
+  font-weight: 700;
+}
+
+textarea {
+  width: 100%;
+  min-height: 130px;
+  margin-bottom: 15px;
+}
+
+code {
+  overflow-wrap: anywhere;
+}

@@ -185,6 +185,28 @@ preserved; regenerate intentionally with:
 agentic-workshop todays-work --overwrite
 ```
 
+## Local interactive workspace
+
+Start the first human-controlled workflow interface from the repository root:
+
+```console
+agentic-workshop workspace
+```
+
+The command prints the exact local URL, normally `http://127.0.0.1:8765/`. Open it manually in a
+browser and press `Ctrl+C` in the terminal to stop it. The server binds only to the literal IPv4
+loopback address and does not open a browser automatically.
+
+This first interactive slice displays Today's Work and Sarah's complete weekly brief. It can approve
+Sarah's brief or record required revision instructions after a deliberate confirmation. It cannot
+run Casey, call a model, generate or serve previews, publish, upload, post, send, or contact an
+external destination. The static `todays-work` command remains available.
+
+While the workspace server is running, treat it as the sole workflow writer. It protects every
+mutation with artifact identity and checksum verification, reloads immediately before mutation, and
+uses atomic replacement. These safeguards detect concurrent CLI changes but do not provide a
+cross-process lock; stop the server before using CLI commands that modify the same workflow.
+
 Content drafting defaults to an async deterministic adapter. The application service depends on
 the provider-neutral `ContentDraftGenerator` port and independently enforces approval, assignment
 coverage, client matching, approved-fact provenance, brand voice, and source references. A future

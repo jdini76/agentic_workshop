@@ -18,6 +18,7 @@ from agentic_workshop.adapters.filesystem_resources import (
     FilesystemResourceLoader,
     ResourceNotFoundError,
 )
+from agentic_workshop.adapters.local_workspace import WorkspaceConfig, serve_workspace
 from agentic_workshop.adapters.model_attempts import (
     ModelAttemptRecorder,
     RetainedAttemptLanguageModel,
@@ -25,6 +26,7 @@ from agentic_workshop.adapters.model_attempts import (
 from agentic_workshop.adapters.model_content import ModelContentDraftGenerator
 from agentic_workshop.adapters.openai_language_model import OpenAILanguageModel
 from agentic_workshop.application.assets import ClientAssetInventory
+from agentic_workshop.application.brief_review import ReviewWeeklyMarketingBrief
 from agentic_workshop.application.content import ContentPackageError, GenerateContentPackage
 from agentic_workshop.application.marketing import (
     CLIENT_RESOURCE_TEMPLATE,
@@ -157,6 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
     todays_work.add_argument("--dashboard-root", type=Path, default=DEFAULT_TODAYS_WORK_ROOT)
     todays_work.add_argument("--overwrite", action="store_true")
 
+    workspace = subparsers.add_parser(
+        "workspace", help="run the local interactive campaign workspace"
+    )
+    workspace.add_argument("--port", type=int, default=8765)
+
     review = subparsers.add_parser("review", help="review an existing brief JSON file")
     review.add_argument("brief_file", type=Path)
     decision = review.add_mutually_exclusive_group(required=True)
@@ -185,6 +192,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             return _campaign_preview(args)
         if args.command == "todays-work":
             return _todays_work(args)
+        if args.command == "workspace":
+            return _workspace(args)
         return _review(args)
     except (
         ContentPackageError,
@@ -217,6 +226,14 @@ def _generate(args: argparse.Namespace) -> int:
 
 def _review(args: argparse.Namespace) -> int:
     artifact = _load_review_artifact(args.brief_file)
+    if isinstance(artifact, WeeklyMarketingBrief):
+        service = ReviewWeeklyMarketingBrief()
+        if args.approve:
+            service.approve(args.brief_file)
+        else:
+            service.request_revision(args.brief_file, args.request_revision)
+        print(args.brief_file)
+        return 0
     data = artifact.model_dump(mode="json")
     if args.approve:
         data.update(approval_state=BriefApprovalState.APPROVED, revision_note=None)
@@ -225,16 +242,10 @@ def _review(args: argparse.Namespace) -> int:
             approval_state=BriefApprovalState.REVISION_REQUESTED,
             revision_note=args.request_revision,
         )
-    if isinstance(artifact, WeeklyMarketingBrief):
-        reviewed_brief = WeeklyMarketingBrief.model_validate(data)
-        _write_artifacts(
-            reviewed_brief, args.brief_file, args.brief_file.with_suffix(".md")
-        )
-    else:
-        reviewed_package = ContentPackage.model_validate(data)
-        _write_content_artifacts(
-            reviewed_package, args.brief_file, args.brief_file.with_suffix(".md")
-        )
+    reviewed_package = ContentPackage.model_validate(data)
+    _write_content_artifacts(
+        reviewed_package, args.brief_file, args.brief_file.with_suffix(".md")
+    )
     print(args.brief_file)
     return 0
 
@@ -524,6 +535,42 @@ def _todays_work(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     print(dashboard)
+    return 0
+
+
+def _workspace(args: argparse.Namespace) -> int:
+    if not 1 <= args.port <= 65535:
+        raise ValueError("workspace port must be between 1 and 65535")
+    repository_root = Path.cwd().resolve(strict=True)
+    serve_workspace(
+        WorkspaceConfig(
+            repository_root=repository_root,
+            resource_root=PACKAGE_RESOURCE_ROOT,
+            brief_path=(
+                repository_root
+                / "artifacts"
+                / "weekly-briefs"
+                / "jordan-and-the-fosters-2026-08-03.json"
+            ),
+            package_path=(
+                repository_root
+                / "artifacts"
+                / "visual-enabled"
+                / "2026-08-03"
+                / "jordan-and-the-fosters-2026-08-03-content.json"
+            ),
+            preview_path=(
+                repository_root
+                / "artifacts"
+                / "campaign-previews"
+                / "jordan-and-the-fosters-2026-08-03-content"
+                / "index.html"
+            ),
+            client_id=ClientId("jordan-and-the-fosters"),
+            campaign_week=date(2026, 8, 3),
+            port=args.port,
+        )
+    )
     return 0
 
 
