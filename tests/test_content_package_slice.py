@@ -124,6 +124,76 @@ def test_approved_brief_creates_source_grounded_draft_package() -> None:
     assert "#" not in social.body
 
 
+def test_august_10_deterministic_package_honors_campaign_and_assets() -> None:
+    loader = FilesystemResourceLoader(PACKAGE_RESOURCE_ROOT)
+    client = ClientProfile.model_validate_json(
+        asyncio.run(loader.load_text("clients/jordan-and-the-fosters.v1.json"))
+    )
+    recommendation = AssetRecommendation(
+        asset_id="jordan-and-the-fosters-front-cover-marketing-1600h",
+        asset_type=AssetType.FRONT_COVER,
+        repository_path=(
+            "assets/clients/jordan-and-the-fosters/derivatives/"
+            "jordan-and-the-fosters-front-cover-marketing-1600h.v1.png"
+        ),
+        manifest_source="client-assets/jordan-and-the-fosters.v1.json",
+        availability="available",
+        diagnostic="verified",
+        approved_use="content_package_asset_recommendation",
+        permitted_uses=(
+            "content_package_asset_recommendation",
+            "official_website",
+            "social_posts",
+        ),
+    )
+    brief = asyncio.run(
+        GenerateWeeklyMarketingBrief(
+            loader,
+            asset_recommendations=(recommendation,),
+        ).execute("jordan-and-the-fosters", date(2026, 8, 10))
+    )
+    package = asyncio.run(
+        GenerateContentPackage(
+            DeterministicContentDraftGenerator(),
+            asset_recommendations=(recommendation,),
+        ).execute(
+            approve(brief),
+            client,
+            approved_brief_source="approved-august-10.json",
+        )
+    )
+    website, social = package.drafts
+    assert package.approval_state is BriefApprovalState.DRAFT
+    assert website.title == "When Trust Takes Time"
+    assert website.body.count("paperback, hardcover, and digital editions") == 1
+    assert website.body.count("https://www.amazon.com/gp/aw/d/B0D5BT1XDZ") == 1
+    assert website.body.count("Choose your edition") == 1
+    assert "Joe Dinicola tells a tale" not in website.body
+    assert not any("readersfavorite.com" in source for source in website.source_references)
+    assert 100 <= len(social.body.split()) <= 140
+    assert "paperback, hardcover, and digital editions" not in social.body
+    assert "Joe Dinicola tells a tale" not in social.body
+    assert not any("readersfavorite.com" in source for source in social.source_references)
+    assert social.body.startswith(
+        "Have you ever helped a child understand why a cautious animal may need time"
+    )
+    assert social.body.lower().count("cautious") <= 2
+    assert "Stories can" not in social.body
+    assert social.body.lower().count("patience") == 1
+    assert social.body.lower().count("trust") == 2
+    assert social.body.lower().count("gentle") == 1
+    assert "cautious but gentle dog who has survived life on the streets" in social.body
+    assert "enters the care of the Foster family" in social.body
+    assert "illustrated read-aloud for children ages 3\N{EN DASH}8" in social.body
+    assert "patience, kindness, trust, and belonging" in social.body
+    assert social.body.count("https://www.amazon.com/gp/aw/d/B0D5BT1XDZ") == 1
+    assert social.body.count("Choose your edition") == 1
+    assert website.asset_recommendations == (recommendation,)
+    assert social.asset_recommendations == (recommendation,)
+    assert "official_website" in website.asset_recommendations[0].permitted_uses
+    assert "social_posts" in social.asset_recommendations[0].permitted_uses
+
+
 def test_channel_drafts_adapt_copy_without_inventing_facts() -> None:
     brief, client = load_inputs()
     client_data = client.model_dump(mode="json")

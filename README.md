@@ -150,6 +150,12 @@ official website, social posts, email marketing, campaign previews, and Casey's 
 recommendations. Casey recommends this metadata-clean derivative instead of the metadata-bearing
 original. Publication and external delivery remain separate human-authorized actions.
 
+New Sarah briefs can carry validated assignment-level asset recommendations. Each assignment records
+the approved derivative, its manifest source, and the exact channel permission required for that
+assignment. Deterministic Casey generation independently reloads the current manifest inventory and
+attaches an asset only when it is available and permits the assignment channel. Recommendations are
+metadata only: they never embed, transform, upload, publish, or externally transmit an image.
+
 Generate a static, local-only campaign preview from an approved content package:
 
 ```console

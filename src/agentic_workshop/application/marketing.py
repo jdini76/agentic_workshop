@@ -6,6 +6,7 @@ from typing import TypeVar
 
 from pydantic import ValidationError
 
+from agentic_workshop.domain.assets import AssetRecommendation
 from agentic_workshop.domain.base import DomainModel
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.employee import Employee
@@ -41,11 +42,24 @@ class InvalidResourceError(MarketingBriefError):
     """Raised when a structured resource does not match its domain schema."""
 
 
+class CampaignDirection(DomainModel):
+    objective: str
+    theme: str
+    website_instructions: str
+    social_instructions: str
+
+
 class GenerateWeeklyMarketingBrief:
     """Build a source-grounded draft without model calls or publication side effects."""
 
-    def __init__(self, resources: ResourceLoader) -> None:
+    def __init__(
+        self,
+        resources: ResourceLoader,
+        *,
+        asset_recommendations: tuple[AssetRecommendation, ...] = (),
+    ) -> None:
         self._resources = resources
+        self._asset_recommendations = asset_recommendations
 
     async def execute(
         self, client_id: str, requested_date: date, *, strict: bool = False
@@ -70,7 +84,17 @@ class GenerateWeeklyMarketingBrief:
             *(procedure.resource_ref for procedure in employee.procedures),
             client.source_reference,
         )
-        unique_sources = tuple(dict.fromkeys(sources))
+        unique_sources = tuple(
+            dict.fromkeys(
+                (
+                    *sources,
+                    *(
+                        recommendation.manifest_source
+                        for recommendation in self._asset_recommendations
+                    ),
+                )
+            )
+        )
 
         audience = (
             "; ".join(profile.name for profile in client.audiences)
@@ -90,6 +114,7 @@ class GenerateWeeklyMarketingBrief:
                 week,
                 call_to_action,
                 unique_sources,
+                self._asset_recommendations,
             )
 
         return self._readiness_brief(
@@ -108,6 +133,7 @@ class GenerateWeeklyMarketingBrief:
         week: date,
         call_to_action: str,
         sources: tuple[str, ...],
+        asset_recommendations: tuple[AssetRecommendation, ...],
     ) -> WeeklyMarketingBrief:
         channels = tuple(
             f"Official {channel.kind}" if channel.is_central_hub else channel.label
@@ -120,37 +146,98 @@ class GenerateWeeklyMarketingBrief:
         )
         if has_linked_social_channels:
             channels = (*channels, "Social channels linked from the official website")
-        deferred = client.deferred_information
         purchase_url = (
             client.purchase_links[0].url
             if client.purchase_links
             else "No approved purchase link"
         )
+        available_assets = tuple(
+            recommendation
+            for recommendation in asset_recommendations
+            if recommendation.availability == "available"
+        )
+        website_assets = GenerateWeeklyMarketingBrief._assets_for_use(
+            available_assets, "official_website"
+        )
+        social_assets = GenerateWeeklyMarketingBrief._assets_for_use(
+            available_assets, "social_posts"
+        )
+        shared_asset_available = bool(website_assets and social_assets)
+        asset_id = (
+            website_assets[0].asset_id
+            if shared_asset_available
+            else "No approved shared campaign asset"
+        )
+        deferred = tuple(
+            item
+            for item in client.deferred_information
+            if not (
+                shared_asset_available
+                and "approved cover and illustrations" in item.lower()
+            )
+        )
+        campaign = GenerateWeeklyMarketingBrief._campaign_direction(
+            week,
+            purchase_url,
+        )
+        if client.approved_reviews:
+            review = client.approved_reviews[0]
+            review_permission = (
+                " The optional approved quotation is "
+                f"\N{LEFT DOUBLE QUOTATION MARK}{review.quote}"
+                f"\N{RIGHT DOUBLE QUOTATION MARK} — {review.attribution}. If used, reproduce "
+                "the quotation and attribution exactly once."
+            )
+            brief_sources = tuple(dict.fromkeys((*sources, review.source_url)))
+        else:
+            review_permission = ""
+            brief_sources = sources
+        asset_assumptions: tuple[str, ...]
+        if shared_asset_available:
+            image_rules = (
+                f" Recommend approved asset {asset_id}. Do not modify, transform, embed, upload, "
+                "publish, or externally transmit the image."
+            )
+            rationale = (
+                "The client profile has approved story facts, audiences, brand voice, calls to "
+                "action, purchase and website links, an author story, and a sourced review. The "
+                f"approved metadata-clean front-cover derivative {asset_id} is available for "
+                "official website and social recommendations under its recorded permissions."
+            )
+            asset_assumptions = (
+                (
+                    "The approved metadata-clean front-cover derivative may be recommended in "
+                    "assignment metadata for its permitted channel uses."
+                ),
+                (
+                    "Recommendation does not authorize modifying, transforming, embedding, "
+                    "uploading, publishing, or externally transmitting the image."
+                ),
+            )
+        else:
+            image_rules = " Do not add or select an image."
+            rationale = (
+                "The client profile has approved story facts, audiences, brand voice, calls to "
+                "action, purchase and website links, an author story, and a sourced review. "
+                "Visual assets remain deferred, so this campaign is text-only."
+            )
+            asset_assumptions = (
+                "The campaign remains text-only until local visual assets receive CEO approval.",
+            )
 
         return WeeklyMarketingBrief(
             client_id=client.id,
             employee_id=employee.id,
             week=week,
-            objective=(
-                "Introduce Jordan and the Fosters to parents and caregivers of children ages "
-                "3\N{EN DASH}8, build interest in its themes, and encourage qualified visitors "
-                "to view "
-                "the available editions on Amazon."
-            ),
+            objective=campaign.objective,
             audience=(
                 "Parents and caregivers of children ages 3\N{EN DASH}8 who value warm animal "
                 "stories and "
                 "want age-appropriate ways to discuss kindness, patience, trust, and belonging."
             ),
-            campaign_theme=(
-                "How patience and kindness help a cautious dog discover trust and belonging."
-            ),
-            rationale=(
-                "The client profile has approved story facts, audiences, brand voice, calls to "
-                "action, purchase and website links, an author story, and a sourced review. "
-                "Visual assets remain deferred, so this campaign is text-only."
-            ),
-            source_references=sources,
+            campaign_theme=campaign.theme,
+            rationale=rationale,
+            source_references=brief_sources,
             recommended_channels=tuple(dict.fromkeys(channels)),
             content_assignments=(
                 ContentAssignment(
@@ -158,30 +245,20 @@ class GenerateWeeklyMarketingBrief:
                     deliverable="Official website campaign feature",
                     channel="Official website",
                     instructions=(
-                        "Use the exact heading \u201cA Story of Kindness, Courage, and "
-                        "Belonging.\u201d Create concise text-only website copy introducing "
-                        "Jordan\u2019s journey, "
-                        "the intended family audience, and the book\u2019s central themes. End "
-                        "with "
-                        "the "
-                        f"approved Amazon CTA and canonical purchase link ({purchase_url}). The "
-                        "approved review excerpt may be included exactly once with its required "
-                        "attribution. State that Jordan and the Fosters is available in paperback, "
-                        "hardcover, and digital editions. Do not add or select an image."
+                        campaign.website_instructions + review_permission + image_rules
+                    ),
+                    asset_recommendations=website_assets,
+                    asset_required_use=(
+                        "official_website" if website_assets else None
                     ),
                 ),
                 ContentAssignment(
                     owner_id=EmployeeId("casey"),
                     deliverable="Social awareness post",
                     channel="Social channels linked from the official website",
-                    instructions=(
-                        "Create one text-only post aimed specifically at parents and caregivers. "
-                        "Lead with a relatable question or observation about helping children "
-                        "understand patience and kindness toward cautious animals. Connect it to "
-                        "Jordan\u2019s journey and end with an approved "
-                        "CTA. Keep the public copy between 100 and 140 words. Do not invent a "
-                        "social platform, image, hashtag, or character limit."
-                    ),
+                    instructions=campaign.social_instructions + image_rules,
+                    asset_recommendations=social_assets,
+                    asset_required_use="social_posts" if social_assets else None,
                 ),
             ),
             call_to_action=call_to_action,
@@ -209,7 +286,7 @@ class GenerateWeeklyMarketingBrief:
             assumptions=(
                 "No public content will be published from this brief.",
                 "Only approved client facts, quotations, links, and calls to action may be used.",
-                "The campaign remains text-only until local visual assets receive CEO approval.",
+                *asset_assumptions,
                 (
                     "Teachers, librarians, rescue organizations, and foster families remain "
                     "approved audiences reserved for future campaigns."
@@ -217,6 +294,73 @@ class GenerateWeeklyMarketingBrief:
                 "Analytics-dependent measures remain pending until analytics are available.",
             ),
             missing_inputs=deferred,
+        )
+
+    @staticmethod
+    def _assets_for_use(
+        recommendations: tuple[AssetRecommendation, ...],
+        required_use: str,
+    ) -> tuple[AssetRecommendation, ...]:
+        return tuple(
+            recommendation
+            for recommendation in recommendations
+            if required_use in recommendation.permitted_uses
+        )
+
+    @staticmethod
+    def _campaign_direction(week: date, purchase_url: str) -> CampaignDirection:
+        if week.isocalendar().week % 2 == 1:
+            return CampaignDirection(
+                objective=(
+                    "Help parents and caregivers of children ages 3\N{EN DASH}8 explore how "
+                    "stories can introduce the idea that trust may take time, while encouraging "
+                    "qualified visitors to view the available editions on Amazon."
+                ),
+                theme="Trust can grow through patience, kindness, and time.",
+                website_instructions=(
+                    "Create a warm official website feature titled "
+                    "\N{LEFT DOUBLE QUOTATION MARK}When Trust Takes Time"
+                    "\N{RIGHT DOUBLE QUOTATION MARK} that differs meaningfully from the August 3 "
+                    "feature. Focus on how Jordan's cautious journey can help parents and "
+                    "caregivers discuss patience and slowly developing trust with children ages "
+                    "3\N{EN DASH}8. State exactly once that Jordan and the Fosters is available in "
+                    "paperback, hardcover, and digital editions. End with exactly one approved "
+                    "CTA and exactly one canonical Amazon URL "
+                    f"({purchase_url})."
+                ),
+                social_instructions=(
+                    "Create one social-awareness post of 100\N{EN DASH}140 words for parents and "
+                    "caregivers of children ages 3\N{EN DASH}8. Focus on how stories can help "
+                    "children understand that a cautious animal may need patience before trust "
+                    "develops. Make the structure and wording meaningfully different from the "
+                    "August 3 social post. Do not mention edition formats or use the review "
+                    "quotation. End with exactly one approved CTA and exactly one canonical Amazon "
+                    f"URL ({purchase_url}). Do not invent a platform, hashtag, or character limit."
+                ),
+            )
+        return CampaignDirection(
+            objective=(
+                "Introduce Jordan and the Fosters to parents and caregivers of children ages "
+                "3\N{EN DASH}8, build interest in its themes, and encourage qualified visitors "
+                "to view the available editions on Amazon."
+            ),
+            theme="How patience and kindness help a cautious dog discover trust and belonging.",
+            website_instructions=(
+                "Use the exact heading \N{LEFT DOUBLE QUOTATION MARK}A Story of Kindness, Courage, "
+                "and Belonging.\N{RIGHT DOUBLE QUOTATION MARK} Create concise website copy "
+                "introducing Jordan's journey, the intended family audience, and the book's "
+                "central themes. State exactly once that Jordan and the Fosters is available in "
+                "paperback, hardcover, and digital editions. The approved review excerpt may be "
+                "included exactly once with its required attribution. End with exactly one "
+                f"approved CTA and exactly one canonical Amazon URL ({purchase_url})."
+            ),
+            social_instructions=(
+                "Create one post of 100\N{EN DASH}140 words aimed specifically at parents and "
+                "caregivers. Lead with a relatable question or observation about helping children "
+                "understand patience and kindness toward cautious animals. Connect it to Jordan's "
+                "journey. End with exactly one approved CTA and exactly one canonical Amazon URL "
+                f"({purchase_url}). Do not invent a platform, hashtag, or character limit."
+            ),
         )
 
     @staticmethod

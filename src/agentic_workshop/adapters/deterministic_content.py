@@ -58,24 +58,45 @@ class DeterministicContentDraftGenerator(ContentDraftGenerator):
             body = self._claims_ledger(client)
             facts_used = client.approved_facts
         elif "social" in channel:
+            trust_takes_time = self._trust_takes_time(brief)
             title = f"Social draft: {brief.campaign_theme}"
             facts_used = client.approved_facts[:3]
-            body = self._social_draft(client, brief, facts_used)
+            body = self._social_draft(
+                client,
+                brief,
+                facts_used,
+                trust_takes_time=trust_takes_time,
+            )
             draft_sources = self._purchase_sources(client, draft_sources)
+            if trust_takes_time:
+                draft_sources = self._without_review_sources(client, draft_sources)
         elif "mail" in channel:
             title = f"Email draft: {brief.campaign_theme}"
             body = self._public_draft(client, brief, compact=False)
             facts_used = client.approved_facts
         elif "website" in channel:
-            title = "A Story of Kindness, Courage, and Belonging."
-            facts_used = self._website_facts(client)
-            body = self._website_draft(client, brief, facts_used)
-            draft_sources = self._purchase_sources(client, draft_sources)
-            draft_sources = tuple(
-                dict.fromkeys(
-                    (*draft_sources, *(review.source_url for review in client.approved_reviews))
-                )
+            trust_takes_time = self._trust_takes_time(brief)
+            title = (
+                "When Trust Takes Time"
+                if trust_takes_time
+                else "A Story of Kindness, Courage, and Belonging."
             )
+            facts_used = self._website_facts(client)
+            body = self._website_draft(
+                client,
+                brief,
+                facts_used,
+                trust_takes_time=trust_takes_time,
+            )
+            draft_sources = self._purchase_sources(client, draft_sources)
+            if trust_takes_time:
+                draft_sources = self._without_review_sources(client, draft_sources)
+            else:
+                draft_sources = tuple(
+                    dict.fromkeys(
+                        (*draft_sources, *(review.source_url for review in client.approved_reviews))
+                    )
+                )
         else:
             title = f"{assignment.deliverable} draft"
             body = self._generic_draft(client, brief)
@@ -129,10 +150,15 @@ class DeterministicContentDraftGenerator(ContentDraftGenerator):
         client: ClientProfile,
         brief: WeeklyMarketingBrief,
         approved_facts: tuple[str, ...],
+        *,
+        trust_takes_time: bool,
     ) -> str:
         if not approved_facts:
             return "Website copy withheld: no factual marketing claims are currently approved."
-        introduction = cls._first_sentences(client.summary, count=3)
+        introduction = cls._first_sentences(
+            client.summary,
+            count=2 if trust_takes_time else 3,
+        )
         audience = (
             "This illustrated read-aloud is intended for children ages 3\N{EN DASH}8 and gives "
             "parents and caregivers a warm way to discuss kindness, patience, trust, and "
@@ -147,11 +173,17 @@ class DeterministicContentDraftGenerator(ContentDraftGenerator):
             "",
         )
         review_block = ""
-        if client.approved_reviews:
+        if client.approved_reviews and not trust_takes_time:
             review = client.approved_reviews[0]
             review_block = f'\n\n"{review.quote}"\n- {review.attribution}'
+        opening = (
+            "Trust does not always arrive all at once. Stories can give families a gentle way "
+            "to talk about why patience matters when someone is learning to feel safe.\n\n"
+            if trust_takes_time
+            else ""
+        )
         return (
-            f"{introduction}\n\n{audience}\n\n{availability}"
+            f"{opening}{introduction}\n\n{audience}\n\n{availability}"
             f"{review_block}\n\n{cls._cta_block(client, brief)}"
         )
 
@@ -161,9 +193,27 @@ class DeterministicContentDraftGenerator(ContentDraftGenerator):
         client: ClientProfile,
         brief: WeeklyMarketingBrief,
         approved_facts: tuple[str, ...],
+        *,
+        trust_takes_time: bool,
     ) -> str:
         if not approved_facts:
             return "Draft withheld: no factual marketing claims are currently approved."
+        if trust_takes_time:
+            question = (
+                "Have you ever helped a child understand why a cautious animal may need time "
+                "before feeling safe?"
+            )
+            journey = cls._first_sentences(client.summary, count=2)
+            audience = (
+                f"{client.identity} is an illustrated read-aloud for children ages "
+                "3\N{EN DASH}8. It gives parents and caregivers a hopeful way to explore "
+                "patience, kindness, trust, and belonging together, while reminding young "
+                "listeners that feeling safe can take time."
+            )
+            return (
+                f"{question}\n\nA warm story can make that conversation easier. "
+                f"{journey}\n\n{audience}\n\n{cls._cta_block(client, brief)}"
+            )
         question = (
             "How can we help children understand that cautious animals may need patience "
             "and kindness?"
@@ -174,6 +224,10 @@ class DeterministicContentDraftGenerator(ContentDraftGenerator):
             "ages 3\N{EN DASH}8."
         )
         return f"{question}\n\n{journey}\n\n{audience}\n\n{cls._cta_block(client, brief)}"
+
+    @staticmethod
+    def _trust_takes_time(brief: WeeklyMarketingBrief) -> bool:
+        return brief.campaign_theme == "Trust can grow through patience, kindness, and time."
 
     @classmethod
     def _generic_draft(cls, client: ClientProfile, brief: WeeklyMarketingBrief) -> str:
@@ -206,6 +260,14 @@ class DeterministicContentDraftGenerator(ContentDraftGenerator):
         client: ClientProfile, sources: tuple[str, ...]
     ) -> tuple[str, ...]:
         return tuple(dict.fromkeys((*sources, *(link.url for link in client.purchase_links))))
+
+    @staticmethod
+    def _without_review_sources(
+        client: ClientProfile,
+        sources: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        review_sources = {review.source_url for review in client.approved_reviews}
+        return tuple(source for source in sources if source not in review_sources)
 
     @staticmethod
     def _website_facts(client: ClientProfile) -> tuple[str, ...]:

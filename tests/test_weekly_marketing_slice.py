@@ -158,10 +158,7 @@ def test_generated_json_contains_no_unapproved_book_facts(tmp_path: Path) -> Non
         )
     )
 
-    assert payload["missing_inputs"] == [
-        "Approved cover and illustrations — deferred; channel-dependent and required for "
-        "image-based campaigns, but not a blocker for text-only campaigns"
-    ]
+    assert payload["missing_inputs"] == []
     assert payload["approval_state"] == "draft"
     assert payload["call_to_action"].endswith(
         "Choose your edition of Jordan and the Fosters on Amazon."
@@ -170,3 +167,57 @@ def test_generated_json_contains_no_unapproved_book_facts(tmp_path: Path) -> Non
         "Official website",
         "Social channels linked from the official website",
     ]
+    assert all(
+        assignment["asset_recommendations"][0]["asset_id"]
+        == "jordan-and-the-fosters-front-cover-marketing-1600h"
+        for assignment in payload["content_assignments"]
+    )
+
+
+def test_august_10_campaign_is_asset_aware_and_distinct(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "briefs"
+    assert run(
+        [
+            "brief",
+            "jordan-and-the-fosters",
+            "--week-of",
+            "2026-08-10",
+            "--artifact-root",
+            str(artifact_root),
+        ]
+    ) == 0
+    brief = WeeklyMarketingBrief.model_validate_json(
+        (artifact_root / "jordan-and-the-fosters-2026-08-10.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert brief.week == date(2026, 8, 10)
+    assert brief.approval_state is BriefApprovalState.DRAFT
+    assert brief.campaign_theme == "Trust can grow through patience, kindness, and time."
+    assert "trust may take time" in brief.objective
+    assert not brief.missing_inputs
+    assert "text-only" not in brief.model_dump_json()
+    assert "visual assets remain deferred" not in brief.model_dump_json().lower()
+    website, social = brief.content_assignments
+    assert "paperback, hardcover, and digital editions" in website.instructions
+    assert "optional approved quotation" in website.instructions
+    assert "Joe Dinicola tells a tale" in website.instructions
+    assert "100\N{EN DASH}140 words" in social.instructions
+    assert "paperback, hardcover, and digital editions" not in social.instructions
+    assert "exactly one approved CTA" in website.instructions
+    assert "exactly one approved CTA" in social.instructions
+    assert website.asset_recommendations[0].asset_id == (
+        "jordan-and-the-fosters-front-cover-marketing-1600h"
+    )
+    assert social.asset_recommendations[0].asset_id == (
+        "jordan-and-the-fosters-front-cover-marketing-1600h"
+    )
+    assert "official_website" in website.asset_recommendations[0].permitted_uses
+    assert "social_posts" in social.asset_recommendations[0].permitted_uses
+    assert website.asset_required_use == "official_website"
+    assert social.asset_required_use == "social_posts"
+    assert "client-assets/jordan-and-the-fosters.v1.json" in brief.source_references
+    assert (
+        "https://readersfavorite.com/book-review/jordan-and-the-fosters"
+        in brief.source_references
+    )

@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
+from agentic_workshop.domain.assets import AssetRecommendation
 from agentic_workshop.domain.base import DomainModel
 from agentic_workshop.domain.identity import ClientId, EmployeeId, NonBlank
 
@@ -22,6 +23,21 @@ class ContentAssignment(DomainModel):
     deliverable: NonBlank
     channel: NonBlank
     instructions: NonBlank
+    asset_recommendations: tuple[AssetRecommendation, ...] = ()
+    asset_required_use: NonBlank | None = None
+
+    @model_validator(mode="after")
+    def validate_asset_permission(self) -> "ContentAssignment":
+        if self.asset_recommendations and self.asset_required_use is None:
+            raise ValueError("asset_required_use is required for asset recommendations")
+        if not self.asset_recommendations and self.asset_required_use is not None:
+            raise ValueError("asset_required_use requires an asset recommendation")
+        if self.asset_required_use is not None and any(
+            self.asset_required_use not in recommendation.permitted_uses
+            for recommendation in self.asset_recommendations
+        ):
+            raise ValueError("asset recommendation does not permit the assignment use")
+        return self
 
 
 class SuccessMetric(DomainModel):
@@ -57,4 +73,3 @@ class WeeklyMarketingBrief(DomainModel):
         elif self.revision_note is not None:
             raise ValueError("revision_note is only valid when revision is requested")
         return self
-

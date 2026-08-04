@@ -72,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     brief.add_argument("--strict", action="store_true")
     brief.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
     brief.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
+    brief.add_argument("--repository-root", type=Path, default=Path.cwd())
 
     content = subparsers.add_parser(
         "content-package", help="generate channel drafts from an approved weekly brief"
@@ -213,7 +214,13 @@ def main() -> None:
 
 def _generate(args: argparse.Namespace) -> int:
     loader = FilesystemResourceLoader(args.resource_root)
-    service = GenerateWeeklyMarketingBrief(loader)
+    asset_recommendations = asyncio.run(
+        _asset_recommendations(loader, ClientId(args.client_id), args.repository_root)
+    )
+    service = GenerateWeeklyMarketingBrief(
+        loader,
+        asset_recommendations=asset_recommendations,
+    )
     brief = asyncio.run(service.execute(args.client_id, args.week_of, strict=args.strict))
     stem = f"{args.client_id}-{brief.week.isoformat()}"
     json_path = args.artifact_root / f"{stem}.json"

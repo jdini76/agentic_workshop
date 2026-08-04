@@ -38,6 +38,20 @@ def render_weekly_marketing_brief(brief: WeeklyMarketingBrief) -> str:
                 "",
             ]
         )
+        if assignment.asset_recommendations:
+            lines.extend(["#### Asset recommendations", ""])
+            lines.append(f"- Required channel use: `{assignment.asset_required_use}`")
+            for recommendation in assignment.asset_recommendations:
+                permissions = ", ".join(recommendation.permitted_uses)
+                lines.extend(
+                    [
+                        f"- Asset ID: `{recommendation.asset_id}`",
+                        f"  - Manifest: `{recommendation.manifest_source}`",
+                        f"  - Availability: {recommendation.availability}",
+                        f"  - Permitted uses: {permissions}",
+                        "",
+                    ]
+                )
     lines.extend(["## Success metrics", ""])
     lines.extend(f"- **{metric.name}:** {metric.target}" for metric in brief.success_metrics)
     lines.append("")
