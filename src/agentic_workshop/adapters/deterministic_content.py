@@ -13,6 +13,9 @@ from agentic_workshop.ports.content_generation import ContentDraftGenerator
 class DeterministicContentDraftGenerator(ContentDraftGenerator):
     """Render safe drafts using only literal values from validated inputs."""
 
+    def __init__(self, *, revision_instructions: str | None = None) -> None:
+        self.revision_instructions = revision_instructions
+
     async def generate(
         self,
         brief: WeeklyMarketingBrief,

@@ -29,6 +29,9 @@ from agentic_workshop.application.assets import ClientAssetInventory
 from agentic_workshop.application.brief_review import ReviewWeeklyMarketingBrief
 from agentic_workshop.application.content import ContentPackageError, GenerateContentPackage
 from agentic_workshop.application.content_review import ReviewContentPackage
+from agentic_workshop.application.deterministic_content import (
+    GenerateDeterministicContentPackage,
+)
 from agentic_workshop.application.marketing import (
     CLIENT_RESOURCE_TEMPLATE,
     GenerateWeeklyMarketingBrief,
@@ -264,9 +267,28 @@ def _generate_content_package(
         args.brief_file.read_text(encoding="utf-8")
     )
     loader = FilesystemResourceLoader(args.resource_root)
+    use_openai = force_openai or args.generator == "openai"
+    if not use_openai:
+        package_path = args.artifact_root / (
+            f"{brief.client_id}-{brief.week.isoformat()}-content.json"
+        )
+        generated = asyncio.run(
+            GenerateDeterministicContentPackage(
+                args.repository_root,
+                loader,
+                output_root=args.artifact_root,
+            ).execute(
+                brief_path=args.brief_file,
+                package_path=package_path,
+                expected_client_id=brief.client_id,
+                expected_week=brief.week,
+            )
+        )
+        print(generated.json_path)
+        print(generated.markdown_path)
+        return 0
     client_ref = CLIENT_RESOURCE_TEMPLATE.format(client_id=brief.client_id)
     client = ClientProfile.model_validate_json(asyncio.run(loader.load_text(client_ref)))
-    use_openai = force_openai or args.generator == "openai"
     if use_openai and not args.confirm_paid_call:
         raise ValueError("--confirm-paid-call is required before any paid OpenAI request")
     artifact_root = args.artifact_root

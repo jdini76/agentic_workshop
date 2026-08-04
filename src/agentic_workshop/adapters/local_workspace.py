@@ -47,11 +47,19 @@ from agentic_workshop.application.content_review import (
     LoadedContentArtifact,
     ReviewContentPackage,
 )
+from agentic_workshop.application.deterministic_content import (
+    DeterministicContentConflictError,
+    DeterministicContentPrerequisiteError,
+    DeterministicContentWorkflowError,
+    GenerateDeterministicContentPackage,
+    combined_generation_checksum,
+)
 from agentic_workshop.application.todays_work import TodaysWorkError
 from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.presentation.workspace import (
     render_brief,
     render_confirmation,
+    render_generation_confirmation,
     render_package,
     render_package_confirmation,
     render_workspace_error,
@@ -182,6 +190,10 @@ class LocalWorkspaceApp:
         self._review = ReviewWeeklyMarketingBrief()
         self._content_review = ReviewContentPackage()
         self._loader = FilesystemResourceLoader(config.resource_root)
+        self._deterministic_content = GenerateDeterministicContentPackage(
+            config.repository_root,
+            self._loader,
+        )
         self._history = LoadCampaignHistory(
             config.repository_root, self._loader, config.client_id
         )
@@ -189,10 +201,18 @@ class LocalWorkspaceApp:
 
     def handle(self, request: WorkspaceRequest) -> WorkspaceResponse:
         if request.headers.get("Host") != self._config.host_header:
-            return self._error(HTTPStatus.BAD_REQUEST, "Invalid local workspace host.")
+            return self._route_error(
+                request.target,
+                HTTPStatus.BAD_REQUEST,
+                "Invalid local workspace host.",
+            )
         route = urlsplit(request.target)
         if route.scheme or route.netloc:
-            return self._error(HTTPStatus.BAD_REQUEST, "Absolute request targets are not accepted.")
+            return self._route_error(
+                route.path,
+                HTTPStatus.BAD_REQUEST,
+                "Absolute request targets are not accepted.",
+            )
         if request.method == "GET":
             return self._get(route.path, route.query, request)
         if request.method == "POST":
@@ -245,6 +265,50 @@ class LocalWorkspaceApp:
                         cookie_header,
                     )
                 if page.startswith("package"):
+                    if page == "package-generate-confirm":
+                        loaded_brief = self._load_expected_brief(campaign)
+                        package_checksum: str | None = None
+                        package_identity = "absent"
+                        if campaign.record.package is not None:
+                            loaded_existing = self._load_expected_package(campaign)
+                            package_checksum = loaded_existing.checksum
+                            package_identity = loaded_existing.package.package_id
+                        self._ensure_generation_allowed(
+                            loaded_brief.brief.approval_state.value,
+                            (
+                                campaign.record.package.approval_state.value
+                                if campaign.record.package is not None
+                                else None
+                            ),
+                        )
+                        brief_identity = self._brief_identity(campaign)
+                        bound_checksum = combined_generation_checksum(
+                            loaded_brief.checksum,
+                            package_checksum,
+                        )
+                        nonce = self._security.confirmation_nonce(
+                            action="generate",
+                            client_id=loaded_brief.brief.client_id,
+                            week=loaded_brief.brief.week,
+                            checksum=bound_checksum,
+                            artifact_identity=(
+                                f"{brief_identity}:{package_identity}"
+                            ),
+                        )
+                        return self._html(
+                            HTTPStatus.OK,
+                            render_generation_confirmation(
+                                campaign_week=campaign.record.week,
+                                client_id=str(self._config.client_id),
+                                brief_identity=brief_identity,
+                                brief_checksum=loaded_brief.checksum,
+                                package_identity=package_identity,
+                                package_checksum=package_checksum,
+                                csrf_token=self._security.csrf_token(session),
+                                confirmation_nonce=nonce,
+                            ),
+                            cookie_header,
+                        )
                     loaded_package = self._load_expected_package(campaign)
                     if page == "package":
                         return self._html(
@@ -327,16 +391,20 @@ class LocalWorkspaceApp:
                     ),
                     cookie_header,
                 )
-            return self._error(HTTPStatus.NOT_FOUND, "That local workspace page was not found.")
+            return self._route_error(
+                path,
+                HTTPStatus.NOT_FOUND,
+                "That local workspace page was not found.",
+            )
         except CampaignAmbiguityError as error:
-            return self._error(HTTPStatus.CONFLICT, str(error), cookie_header)
+            return self._route_error(path, HTTPStatus.CONFLICT, str(error), cookie_header)
         except CampaignNotFoundError as error:
             status = HTTPStatus.BAD_REQUEST if "format" in str(error) else HTTPStatus.NOT_FOUND
-            return self._error(status, str(error), cookie_header)
+            return self._route_error(path, status, str(error), cookie_header)
         except BriefArtifactMissingError as error:
-            return self._error(HTTPStatus.NOT_FOUND, str(error), cookie_header)
+            return self._route_error(path, HTTPStatus.NOT_FOUND, str(error), cookie_header)
         except ContentArtifactMissingError as error:
-            return self._error(HTTPStatus.NOT_FOUND, str(error), cookie_header)
+            return self._route_error(path, HTTPStatus.NOT_FOUND, str(error), cookie_header)
         except (
             BriefArtifactInvalidError,
             BriefArtifactIdentityError,
@@ -346,10 +414,17 @@ class LocalWorkspaceApp:
             ContentArtifactInvalidError,
             ContentArtifactIdentityError,
             ContentReviewError,
+            DeterministicContentPrerequisiteError,
         ) as error:
-            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error), cookie_header)
+            return self._route_error(
+                path,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                str(error),
+                cookie_header,
+            )
         except (OSError, ValidationError, ValueError) as error:
-            return self._error(
+            return self._route_error(
+                path,
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 f"The local workspace could not load safely: {error}",
                 cookie_header,
@@ -357,33 +432,47 @@ class LocalWorkspaceApp:
 
     def _post(self, path: str, request: WorkspaceRequest) -> WorkspaceResponse:
         if request.headers.get("Origin") != self._config.origin:
-            return self._error(HTTPStatus.FORBIDDEN, "Invalid request origin.")
+            return self._route_error(path, HTTPStatus.FORBIDDEN, "Invalid request origin.")
         session = self._read_session(request)
         if session is None:
-            return self._error(HTTPStatus.FORBIDDEN, "The local session cookie is missing.")
+            return self._route_error(
+                path,
+                HTTPStatus.FORBIDDEN,
+                "The local session cookie is missing.",
+            )
         try:
             form = self._form(request)
         except ValueError as error:
-            return self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return self._route_error(path, HTTPStatus.BAD_REQUEST, str(error))
         csrf = self._single(form, "csrf_token")
         if csrf is None or not hmac.compare_digest(
             csrf,
             self._security.csrf_token(session),
         ):
-            return self._error(HTTPStatus.FORBIDDEN, "The CSRF token is missing or invalid.")
+            return self._route_error(
+                path,
+                HTTPStatus.FORBIDDEN,
+                "The CSRF token is missing or invalid.",
+            )
         try:
             selected, workflow, action = self._post_campaign_route(path)
             campaigns = asyncio.run(self._history.execute())
             campaign = self._select_campaign(campaigns, selected)
         except CampaignAmbiguityError as error:
-            return self._error(HTTPStatus.CONFLICT, str(error))
+            return self._route_error(path, HTTPStatus.CONFLICT, str(error))
         except CampaignNotFoundError as error:
             status = HTTPStatus.BAD_REQUEST if "format" in str(error) else HTTPStatus.NOT_FOUND
-            return self._error(status, str(error))
+            return self._route_error(path, status, str(error))
         except CampaignArtifactError as error:
-            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
+            return self._route_error(path, HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
         if action not in {"approve", "revision"}:
-            return self._error(HTTPStatus.NOT_FOUND, "That local action was not found.")
+            if workflow == "package" and action == "generate":
+                return self._post_generation(form, campaign)
+            return self._route_error(
+                path,
+                HTTPStatus.NOT_FOUND,
+                "That local action was not found.",
+            )
         artifact_identity = "brief"
         if workflow == "package":
             if campaign.record.package is None:
@@ -476,6 +565,93 @@ class LocalWorkspaceApp:
             headers=self._headers({"Location": location}),
         )
 
+    def _post_generation(
+        self,
+        form: dict[str, list[str]],
+        campaign: CampaignView,
+    ) -> WorkspaceResponse:
+        client_id = self._single(form, "client_id") or ""
+        week = self._single(form, "week") or ""
+        brief_identity = self._single(form, "brief_identity") or ""
+        brief_checksum = self._single(form, "brief_checksum") or ""
+        package_identity = self._single(form, "package_identity") or ""
+        package_checksum_value = self._single(form, "package_checksum") or ""
+        package_checksum = package_checksum_value or None
+        nonce = self._single(form, "confirmation_nonce") or ""
+        bound_checksum = combined_generation_checksum(brief_checksum, package_checksum)
+        if not self._security.consume_confirmation(
+            nonce,
+            action="generate",
+            client_id=client_id,
+            week=week,
+            checksum=bound_checksum,
+            artifact_identity=f"{brief_identity}:{package_identity}",
+        ):
+            return self._campaign_generation_error(
+                campaign.record.week,
+                HTTPStatus.FORBIDDEN,
+                "The generation confirmation is missing, invalid, expired, or already used.",
+            )
+        if (
+            client_id != str(self._config.client_id)
+            or week != campaign.record.week.isoformat()
+            or brief_identity != self._brief_identity(campaign)
+        ):
+            return self._campaign_generation_error(
+                campaign.record.week,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "The confirmed generation inputs do not match the selected campaign.",
+            )
+        try:
+            generated = asyncio.run(
+                self._deterministic_content.execute(
+                    brief_path=campaign.record.brief_path,
+                    package_path=campaign.record.package_path,
+                    expected_client_id=self._config.client_id,
+                    expected_week=campaign.record.week,
+                    expected_brief_checksum=brief_checksum,
+                    expected_package_checksum=package_checksum,
+                    expected_package_identity=(
+                        package_identity if package_identity != "absent" else None
+                    ),
+                    expect_package_absent=package_identity == "absent",
+                )
+            )
+        except DeterministicContentConflictError as error:
+            return self._campaign_generation_error(
+                campaign.record.week, HTTPStatus.CONFLICT, str(error)
+            )
+        except DeterministicContentWorkflowError as error:
+            return self._campaign_generation_error(
+                campaign.record.week,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                str(error),
+            )
+        except (OSError, ValidationError, ValueError):
+            return self._campaign_generation_error(
+                campaign.record.week,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "The deterministic generation inputs could not be validated.",
+            )
+        except Exception:
+            return self._campaign_generation_error(
+                campaign.record.week,
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "Deterministic generation failed unexpectedly.",
+            )
+        return WorkspaceResponse(
+            status=HTTPStatus.SEE_OTHER,
+            body=b"",
+            headers=self._headers(
+                {
+                    "Location": (
+                        f"/campaign/{generated.package.week.isoformat()}/package"
+                        "?result=package-generated"
+                    )
+                }
+            ),
+        )
+
     def _load_expected_brief(self, campaign: CampaignView) -> LoadedBriefArtifact:
         loaded = self._review.load(campaign.record.brief_path)
         if (
@@ -497,6 +673,28 @@ class LocalWorkspaceApp:
                 "Casey's package does not match the configured client and campaign week."
             )
         return loaded
+
+    @staticmethod
+    def _brief_identity(campaign: CampaignView) -> str:
+        brief = campaign.record.brief
+        if brief is None:
+            return "missing"
+        return f"{brief.client_id}:{brief.week.isoformat()}:{brief.employee_id}"
+
+    @staticmethod
+    def _ensure_generation_allowed(
+        brief_state: str,
+        package_state: str | None,
+    ) -> None:
+        if brief_state != "approved":
+            raise DeterministicContentPrerequisiteError(
+                "Sarah's brief must be approved before Casey can generate content."
+            )
+        if package_state not in {None, "revision_requested"}:
+            raise DeterministicContentPrerequisiteError(
+                "Casey generation is allowed only when the package is missing "
+                "or revision requested."
+            )
 
     @staticmethod
     def _select_campaign(
@@ -535,6 +733,7 @@ class LocalWorkspaceApp:
             ("package",): "package",
             ("package", "approve", "confirm"): "package-approve-confirm",
             ("package", "revision", "confirm"): "package-revision-confirm",
+            ("package", "generate", "confirm"): "package-generate-confirm",
         }
         page = pages.get(tuple(suffix))
         if page is None:
@@ -609,6 +808,70 @@ class LocalWorkspaceApp:
             render_workspace_error(HTTPStatus(status).phrase, message),
             cookie_header,
         )
+
+    def _route_error(
+        self,
+        path: str,
+        status: int,
+        message: str,
+        cookie_header: str | None = None,
+    ) -> WorkspaceResponse:
+        week = self._generation_route_week(path)
+        if week is not None:
+            return self._campaign_generation_error(
+                week,
+                status,
+                message,
+                cookie_header,
+            )
+        return self._error(status, message, cookie_header)
+
+    def _campaign_generation_error(
+        self,
+        week: date,
+        status: int,
+        internal_message: str,
+        cookie_header: str | None = None,
+    ) -> WorkspaceResponse:
+        del internal_message
+        safe_messages = {
+            HTTPStatus.BAD_REQUEST: "The generation request could not be understood.",
+            HTTPStatus.FORBIDDEN: "The generation request could not be verified.",
+            HTTPStatus.NOT_FOUND: "Required campaign work is missing.",
+            HTTPStatus.CONFLICT: "The campaign changed after confirmation. Return and try again.",
+            HTTPStatus.UNPROCESSABLE_ENTITY: (
+                "Review the campaign prerequisites before generating Casey's package."
+            ),
+        }
+        message = safe_messages.get(
+            HTTPStatus(status),
+            "Casey's package could not be generated.",
+        )
+        return self._html(
+            status,
+            render_workspace_error(
+                "Casey's package can't be generated yet",
+                message,
+                return_path=f"/campaign/{week.isoformat()}",
+                return_label=f"Return to campaign {week.isoformat()}",
+            ),
+            cookie_header,
+        )
+
+    @staticmethod
+    def _generation_route_week(path: str) -> date | None:
+        route_path = urlsplit(path).path
+        parts = route_path.strip("/").split("/")
+        if (
+            len(parts) < 4
+            or parts[0] != "campaign"
+            or parts[2:4] != ["package", "generate"]
+        ):
+            return None
+        try:
+            return parse_campaign_week(parts[1])
+        except CampaignNotFoundError:
+            return None
 
     @staticmethod
     def _headers(

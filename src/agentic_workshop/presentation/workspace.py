@@ -47,6 +47,17 @@ def render_workspace_home(
         if snapshot.content_package.state != "missing"
         else "<p>Casey's package is pending.</p>"
     )
+    generation_link = ""
+    if snapshot.brief.state == "approved" and snapshot.content_package.state == "missing":
+        generation_link = (
+            f'<p><a class="button" href="{selected_path}/package/generate/confirm">'
+            "Generate Casey's package</a></p>"
+        )
+    elif snapshot.content_package.state == "revision_requested":
+        generation_link = (
+            f'<p><a class="button" href="{selected_path}/package/generate/confirm">'
+            "Regenerate Casey's package</a></p>"
+        )
     return _page(
         "Today's Work",
         f"""{notice}
@@ -72,6 +83,7 @@ def render_workspace_home(
           <p>Generation method: {html.escape(snapshot.generation_method)}</p>
           {drafts}
           {package_link}
+          {generation_link}
         </section>
         <section><h2>Campaign cover and preview</h2>
           <p>{asset}</p>
@@ -189,13 +201,19 @@ def render_confirmation(
     )
 
 
-def render_workspace_error(title: str, message: str) -> str:
+def render_workspace_error(
+    title: str,
+    message: str,
+    *,
+    return_path: str = "/",
+    return_label: str = "Return to Today's Work",
+) -> str:
     return _page(
         title,
         f"""<p class="local">Local workspace — nothing is published.</p>
         <h1>{html.escape(title)}</h1>
         <p class="error">{html.escape(message)}</p>
-        <p><a href="/">Return to Today's Work</a></p>""",
+        <p><a href="{html.escape(return_path, quote=True)}">{html.escape(return_label)}</a></p>""",
     )
 
 
@@ -266,6 +284,8 @@ def render_package_confirmation(
         if revision
         else "Confirm that this package is accepted for review. This does not publish anything."
     )
+
+
     textarea = (
         '<label for="revision_note">Revision instructions</label>'
         '<textarea id="revision_note" name="revision_note" required></textarea>'
@@ -292,6 +312,52 @@ def render_package_confirmation(
           <input type="hidden" name="week"
                  value="{html.escape(package.week.isoformat(), quote=True)}">
           {textarea}<button type="submit">{html.escape(title)}</button>
+        </form>""",
+    )
+
+
+def render_generation_confirmation(
+    *,
+    campaign_week: date,
+    client_id: str,
+    brief_identity: str,
+    brief_checksum: str,
+    package_identity: str,
+    package_checksum: str | None,
+    csrf_token: str,
+    confirmation_nonce: str,
+) -> str:
+    regeneration = package_checksum is not None
+    verb = "Regenerate" if regeneration else "Generate"
+    mode = (
+        "replace the revision-requested package"
+        if regeneration
+        else "create a new package"
+    )
+    return _page(
+        f"{verb} Casey's package",
+        f"""<p class="local">Local workspace — nothing is published.</p>
+        <p><a href="/campaign/{campaign_week.isoformat()}">← Today's Work</a></p>
+        <h1>{verb} Casey's package</h1>
+        <p>This will {html.escape(mode)} for campaign week
+        <strong>{campaign_week.isoformat()}</strong>.</p>
+        <ul><li>Sarah brief: <code>{html.escape(brief_identity)}</code></li>
+        <li>Generation method: deterministic</li><li>No paid model request will be made.</li>
+        <li>The result will be a draft and nothing will be published.</li></ul>
+        <form method="post" action="/campaign/{campaign_week.isoformat()}/package/generate">
+          <input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}">
+          <input type="hidden" name="confirmation_nonce"
+                 value="{html.escape(confirmation_nonce, quote=True)}">
+          <input type="hidden" name="client_id" value="{html.escape(client_id, quote=True)}">
+          <input type="hidden" name="week" value="{campaign_week.isoformat()}">
+          <input type="hidden" name="brief_identity"
+                 value="{html.escape(brief_identity, quote=True)}">
+          <input type="hidden" name="brief_checksum" value="{brief_checksum}">
+          <input type="hidden" name="package_identity"
+                 value="{html.escape(package_identity, quote=True)}">
+          <input type="hidden" name="package_checksum"
+                 value="{html.escape(package_checksum or '', quote=True)}">
+          <button type="submit">{verb} draft package</button>
         </form>""",
     )
 

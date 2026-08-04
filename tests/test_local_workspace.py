@@ -498,7 +498,7 @@ def test_campaign_history_reports_missing_package_and_preview(tmp_path: Path) ->
     config = local_config(tmp_path)
     app = LocalWorkspaceApp(config)
     rendered = get(app, config, "/campaign/2026-08-03").body.decode()
-    assert "content package is missing" in rendered
+    assert "content package is waiting for Sarah" in rendered
     assert "Campaign preview: not available" in rendered
     assert ">missing</td>" in rendered
 

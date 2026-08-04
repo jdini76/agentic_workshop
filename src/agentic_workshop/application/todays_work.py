@@ -293,7 +293,14 @@ class LoadTodaysWork:
         elif brief.approval_state.value != "approved":
             items.append("Review Sarah's weekly brief.")
         if package is None:
-            items.append("Casey's content package is missing.")
+            if brief is None:
+                items.append("Casey's content package is missing.")
+            elif brief.approval_state.value == "approved":
+                items.append("Generate Casey's content package.")
+            else:
+                items.append("Casey's content package is waiting for Sarah's approval.")
+        elif package.approval_state.value == "revision_requested":
+            items.append("Regenerate Casey's content package using the revision instructions.")
         elif package.approval_state.value != "approved":
             items.append("Review Casey's content package.")
         if asset is None or asset.availability != "available":
