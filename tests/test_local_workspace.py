@@ -1,6 +1,7 @@
 import hashlib
 import re
 import shutil
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -24,6 +25,7 @@ from agentic_workshop.application.brief_review import (
 )
 from agentic_workshop.cli import build_parser, run
 from agentic_workshop.domain.assets import ClientAssetManifest
+from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
 
@@ -34,6 +36,10 @@ SOURCE_BRIEF = (
     / "artifacts"
     / "weekly-briefs"
     / "jordan-and-the-fosters-2026-08-03.json"
+)
+SOURCE_PACKAGE = (
+    REPOSITORY_ROOT / "artifacts" / "content-packages"
+    / "jordan-and-the-fosters-2026-08-03-content.json"
 )
 CLIENT_ID = ClientId("jordan-and-the-fosters")
 
@@ -63,7 +69,10 @@ def local_config(root: Path, *, port: int = 8765) -> WorkspaceConfig:
     target_asset = root / derivative.repository_path
     target_asset.parent.mkdir(parents=True)
     shutil.copyfile(REPOSITORY_ROOT / derivative.repository_path, target_asset)
-    brief = root / "artifacts" / "weekly-briefs" / "brief.json"
+    brief = (
+        root / "artifacts" / "weekly-briefs"
+        / "jordan-and-the-fosters-2026-08-03.json"
+    )
     brief.parent.mkdir(parents=True)
     source_brief = WeeklyMarketingBrief.model_validate_json(
         SOURCE_BRIEF.read_text(encoding="utf-8")
@@ -80,15 +89,45 @@ def local_config(root: Path, *, port: int = 8765) -> WorkspaceConfig:
     return WorkspaceConfig(
         repository_root=root,
         resource_root=resources,
-        brief_path=brief,
-        package_path=root / "artifacts" / "content-packages" / "missing.json",
-        preview_path=root / "artifacts" / "campaign-previews" / "missing.html",
         client_id=CLIENT_ID,
-        campaign_week=WeeklyMarketingBrief.model_validate_json(
-            brief.read_text(encoding="utf-8")
-        ).week,
         port=port,
     )
+
+
+def campaign_brief(config: WorkspaceConfig) -> Path:
+    return (
+        config.repository_root / "artifacts" / "weekly-briefs"
+        / "jordan-and-the-fosters-2026-08-03.json"
+    )
+
+
+def add_campaign(config: WorkspaceConfig, week: str = "2026-08-10") -> tuple[Path, Path]:
+    brief = WeeklyMarketingBrief.model_validate_json(SOURCE_BRIEF.read_text(encoding="utf-8"))
+    brief_path = (
+        config.repository_root / "artifacts" / "weekly-briefs"
+        / f"jordan-and-the-fosters-{week}.json"
+    )
+    brief_path.write_text(
+        brief.model_copy(
+            update={
+                "week": date.fromisoformat(week),
+                "approval_state": BriefApprovalState.DRAFT,
+                "revision_note": None,
+            }
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    package = ContentPackage.model_validate_json(SOURCE_PACKAGE.read_text(encoding="utf-8"))
+    package_path = (
+        config.repository_root / "artifacts" / "content-packages"
+        / f"jordan-and-the-fosters-{week}-content.json"
+    )
+    package_path.parent.mkdir(parents=True, exist_ok=True)
+    package_path.write_text(
+        package.model_copy(update={"week": date.fromisoformat(week)}).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    return brief_path, package_path
 
 
 def get(app: LocalWorkspaceApp, config: WorkspaceConfig, target: str, cookie: str = ""):
@@ -140,17 +179,18 @@ def test_review_service_and_cli_preserve_approval_and_revision_behavior(
 ) -> None:
     config = local_config(tmp_path)
     service = ReviewWeeklyMarketingBrief()
-    loaded = service.load(config.brief_path)
-    approved = service.approve(config.brief_path, expected_checksum=loaded.checksum)
+    brief_path = campaign_brief(config)
+    loaded = service.load(brief_path)
+    approved = service.approve(brief_path, expected_checksum=loaded.checksum)
     assert approved.brief.approval_state is BriefApprovalState.APPROVED
     assert approved.brief.revision_note is None
     assert run(
-        ["review", str(config.brief_path), "--request-revision", "Clarify <audience>."]
+        ["review", str(brief_path), "--request-revision", "Clarify <audience>."]
     ) == 0
-    revised = service.load(config.brief_path).brief
+    revised = service.load(brief_path).brief
     assert revised.approval_state is BriefApprovalState.REVISION_REQUESTED
     assert revised.revision_note == "Clarify <audience>."
-    assert config.brief_path.with_suffix(".md").is_file()
+    assert brief_path.with_suffix(".md").is_file()
 
 
 def test_review_service_rejects_missing_invalid_identity_and_stale_artifacts(
@@ -165,34 +205,34 @@ def test_review_service_rejects_missing_invalid_identity_and_stale_artifacts(
     with pytest.raises(BriefArtifactInvalidError):
         service.load(invalid)
     config = local_config(tmp_path / "workspace")
-    loaded = service.load(config.brief_path)
+    brief_path = campaign_brief(config)
+    loaded = service.load(brief_path)
     with pytest.raises(BriefArtifactIdentityError):
         service.approve(
-            config.brief_path,
+            brief_path,
             expected_client_id=ClientId("another-client"),
         )
-    config.brief_path.write_bytes(config.brief_path.read_bytes() + b"\n")
+    brief_path.write_bytes(brief_path.read_bytes() + b"\n")
     with pytest.raises(BriefArtifactConflictError):
-        service.approve(config.brief_path, expected_checksum=loaded.checksum)
+        service.approve(brief_path, expected_checksum=loaded.checksum)
 
 
 def test_home_brief_escaping_headers_and_get_requests_are_read_only(tmp_path: Path) -> None:
     config = local_config(tmp_path)
-    brief = WeeklyMarketingBrief.model_validate_json(
-        config.brief_path.read_text(encoding="utf-8")
-    )
+    brief_path = campaign_brief(config)
+    brief = WeeklyMarketingBrief.model_validate_json(brief_path.read_text(encoding="utf-8"))
     data = brief.model_dump(mode="json")
     data["objective"] = "Introduce <script>alert(1)</script> safely"
-    config.brief_path.write_text(
+    brief_path.write_text(
         WeeklyMarketingBrief.model_validate(data).model_dump_json(indent=2),
         encoding="utf-8",
     )
-    before = hashlib.sha256(config.brief_path.read_bytes()).hexdigest()
+    before = hashlib.sha256(brief_path.read_bytes()).hexdigest()
     app = LocalWorkspaceApp(config, security=WorkspaceSecurity(b"test-secret"))
     home = get(app, config, "/")
     brief_page = get(app, config, "/brief")
     confirm = get(app, config, "/brief/approve/confirm")
-    after = hashlib.sha256(config.brief_path.read_bytes()).hexdigest()
+    after = hashlib.sha256(brief_path.read_bytes()).hexdigest()
     assert home.status == brief_page.status == confirm.status == 200
     assert before == after
     rendered = brief_page.body.decode()
@@ -243,13 +283,14 @@ def test_brief_actions_follow_state_and_direct_invalid_actions_are_rejected(
     assert "Request a revision" in draft_page
 
     service = ReviewWeeklyMarketingBrief()
-    service.approve(config.brief_path)
+    brief_path = campaign_brief(config)
+    service.approve(brief_path)
     approved_page = get(app, config, "/brief").body.decode()
     assert "Approve Sarah's brief" not in approved_page
     assert "Request a revision" in approved_page
     assert get(app, config, "/brief/approve/confirm").status == 422
 
-    loaded = service.load(config.brief_path)
+    loaded = service.load(brief_path)
     session = security.new_session()
     nonce = security.confirmation_nonce(
         action="approve",
@@ -274,7 +315,7 @@ def test_brief_actions_follow_state_and_direct_invalid_actions_are_rejected(
     assert invalid_post.status == 422
     assert "Approval is not valid" in invalid_post.body.decode()
 
-    service.request_revision(config.brief_path, "Regenerate the campaign strategy.")
+    service.request_revision(brief_path, "Regenerate the campaign strategy.")
     revision_page = get(app, config, "/brief").body.decode()
     assert "Approve Sarah's brief" not in revision_page
     assert "Request a revision" not in revision_page
@@ -289,16 +330,17 @@ def test_approve_and_revision_posts_use_confirmation_and_redirect(tmp_path: Path
     cookie, fields = confirmation(app, config, "approve")
     approved = post(app, config, "approve", cookie, fields)
     assert approved.status == 303
-    assert approved.headers["Location"] == "/?result=brief-approved"
+    assert approved.headers["Location"] == "/campaign/2026-08-03?result=brief-approved"
+    brief_path = campaign_brief(config)
     assert ReviewWeeklyMarketingBrief().load(
-        config.brief_path
+        brief_path
     ).brief.approval_state is BriefApprovalState.APPROVED
 
     cookie, fields = confirmation(app, config, "revision")
     fields["revision_note"] = "Use <strong>warmer</strong> language."
     revised = post(app, config, "revision", cookie, fields)
     assert revised.status == 303
-    stored = ReviewWeeklyMarketingBrief().load(config.brief_path).brief
+    stored = ReviewWeeklyMarketingBrief().load(brief_path).brief
     assert stored.approval_state is BriefApprovalState.REVISION_REQUESTED
     page = get(app, config, "/brief", cookie).body.decode()
     assert "Use &lt;strong&gt;warmer&lt;/strong&gt; language." in page
@@ -331,7 +373,8 @@ def test_post_rejects_stale_blank_invalid_and_reused_confirmations(tmp_path: Pat
 
     cookie, fields = confirmation(app, config, "revision")
     fields["revision_note"] = "Revise the campaign objective."
-    config.brief_path.write_bytes(config.brief_path.read_bytes() + b"\n")
+    brief_path = campaign_brief(config)
+    brief_path.write_bytes(brief_path.read_bytes() + b"\n")
     conflict = post(app, config, "revision", cookie, fields)
     assert conflict.status == 409
     assert "changed after confirmation" in conflict.body.decode()
@@ -365,28 +408,29 @@ def test_wrong_host_origin_identity_and_unknown_paths_are_rejected(tmp_path: Pat
 
 def test_missing_and_wrong_campaign_brief_have_plain_language_pages(tmp_path: Path) -> None:
     config = local_config(tmp_path)
+    add_campaign(config, "2026-08-03")
     app = LocalWorkspaceApp(config)
-    config.brief_path.unlink()
-    missing = get(app, config, "/brief")
+    campaign_brief(config).unlink()
+    missing = get(app, config, "/campaign/2026-08-03/brief")
     assert missing.status == 404
     assert "weekly brief is missing" in missing.body.decode()
 
     config = local_config(tmp_path / "invalid")
-    config.brief_path.write_text("not json", encoding="utf-8")
+    campaign_brief(config).write_text("not json", encoding="utf-8")
     invalid = get(LocalWorkspaceApp(config), config, "/brief")
     assert invalid.status == 422
-    assert "weekly brief is invalid" in invalid.body.decode()
+    assert "Invalid campaign artifact" in invalid.body.decode()
 
     config = local_config(tmp_path / "wrong")
-    wrong = WorkspaceConfig(
-        **{
-            **config.__dict__,
-            "campaign_week": config.campaign_week.replace(day=10),
-        }
+    brief_path = campaign_brief(config)
+    brief = WeeklyMarketingBrief.model_validate_json(brief_path.read_text(encoding="utf-8"))
+    brief_path.write_text(
+        brief.model_copy(update={"client_id": ClientId("another-client")}).model_dump_json(),
+        encoding="utf-8",
     )
-    mismatch = get(LocalWorkspaceApp(wrong), wrong, "/brief")
+    mismatch = get(LocalWorkspaceApp(config), config, "/brief")
     assert mismatch.status == 422
-    assert "does not match" in mismatch.body.decode()
+    assert "client does not match" in mismatch.body.decode()
 
 
 def test_workspace_binding_is_fixed_and_cli_has_no_bind_option(
@@ -415,3 +459,110 @@ def test_workspace_binding_is_fixed_and_cli_has_no_bind_option(
     with pytest.raises(SystemExit):
         parser.parse_args(["workspace", "--host", "0.0.0.0"])
     assert SESSION_COOKIE in confirmation(LocalWorkspaceApp(config), config, "approve")[0]
+
+
+def test_campaign_history_lists_two_weeks_and_defaults_to_latest(tmp_path: Path) -> None:
+    config = local_config(tmp_path)
+    add_campaign(config)
+    app = LocalWorkspaceApp(config, security=WorkspaceSecurity(b"history-secret"))
+
+    home = get(app, config, "/")
+    rendered = home.body.decode()
+    assert home.status == 200
+    assert "Viewing campaign 2026-08-10" in rendered
+    assert rendered.count("2026-08-03") >= 1
+    assert rendered.count("2026-08-10") >= 2
+    assert "Campaigns" in rendered
+
+    august_3 = get(app, config, "/campaign/2026-08-03").body.decode()
+    august_10 = get(app, config, "/campaign/2026-08-10").body.decode()
+    assert "Viewing campaign 2026-08-03" in august_3
+    assert "Viewing campaign 2026-08-10" in august_10
+    assert '/campaign/2026-08-03/brief' in august_3
+    assert '/campaign/2026-08-10/brief' in august_10
+
+
+def test_campaign_history_reports_missing_package_and_preview(tmp_path: Path) -> None:
+    config = local_config(tmp_path)
+    app = LocalWorkspaceApp(config)
+    rendered = get(app, config, "/campaign/2026-08-03").body.decode()
+    assert "content package is missing" in rendered
+    assert "Campaign preview: not available" in rendered
+    assert ">missing</td>" in rendered
+
+
+def test_campaign_history_rejects_ambiguous_invalid_unknown_and_mismatch(
+    tmp_path: Path,
+) -> None:
+    config = local_config(tmp_path)
+    duplicate = campaign_brief(config).with_name("jordan-and-the-fosters-copy.json")
+    shutil.copyfile(campaign_brief(config), duplicate)
+    assert get(LocalWorkspaceApp(config), config, "/").status == 409
+
+    duplicate.unlink()
+    app = LocalWorkspaceApp(config)
+    assert get(app, config, "/campaign/2026-8-3").status == 400
+    assert get(app, config, "/campaign/2026-08-17").status == 404
+
+    brief_path = campaign_brief(config)
+    brief = WeeklyMarketingBrief.model_validate_json(brief_path.read_text(encoding="utf-8"))
+    brief_path.write_text(
+        brief.model_copy(update={"client_id": ClientId("wrong-client")}).model_dump_json(),
+        encoding="utf-8",
+    )
+    assert get(LocalWorkspaceApp(config), config, "/").status == 422
+
+
+def test_confirmation_is_bound_to_selected_week_and_redirects_back(tmp_path: Path) -> None:
+    config = local_config(tmp_path)
+    add_campaign(config)
+    security = WorkspaceSecurity(b"week-secret")
+    app = LocalWorkspaceApp(config, security=security)
+    response = get(app, config, "/campaign/2026-08-10/brief/approve/confirm")
+    assert response.status == 200
+    cookie = response.headers["Set-Cookie"].split(";", maxsplit=1)[0]
+    fields = dict(
+        re.findall(
+            r'<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"',
+            response.body.decode(),
+        )
+    )
+    fields["week"] = "2026-08-03"
+    rejected = app.handle(
+        WorkspaceRequest(
+            "POST",
+            "/campaign/2026-08-10/brief/approve",
+            {
+                "Host": config.host_header,
+                "Origin": config.origin,
+                "Cookie": cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            urlencode(fields).encode(),
+        )
+    )
+    assert rejected.status == 403
+
+    response = get(app, config, "/campaign/2026-08-10/brief/approve/confirm")
+    cookie = response.headers["Set-Cookie"].split(";", maxsplit=1)[0]
+    fields = dict(
+        re.findall(
+            r'<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"',
+            response.body.decode(),
+        )
+    )
+    approved = app.handle(
+        WorkspaceRequest(
+            "POST",
+            "/campaign/2026-08-10/brief/approve",
+            {
+                "Host": config.host_header,
+                "Origin": config.origin,
+                "Cookie": cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            urlencode(fields).encode(),
+        )
+    )
+    assert approved.status == 303
+    assert approved.headers["Location"].startswith("/campaign/2026-08-10?")

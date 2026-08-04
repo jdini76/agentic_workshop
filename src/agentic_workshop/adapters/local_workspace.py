@@ -29,7 +29,15 @@ from agentic_workshop.application.brief_review import (
     LoadedBriefArtifact,
     ReviewWeeklyMarketingBrief,
 )
-from agentic_workshop.application.todays_work import LoadTodaysWork, TodaysWorkError
+from agentic_workshop.application.campaign_history import (
+    CampaignAmbiguityError,
+    CampaignArtifactError,
+    CampaignNotFoundError,
+    CampaignView,
+    LoadCampaignHistory,
+    parse_campaign_week,
+)
+from agentic_workshop.application.todays_work import TodaysWorkError
 from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.presentation.workspace import (
     render_brief,
@@ -47,11 +55,7 @@ MAX_FORM_BYTES = 16_384
 class WorkspaceConfig:
     repository_root: Path
     resource_root: Path
-    brief_path: Path
-    package_path: Path
-    preview_path: Path
     client_id: ClientId
-    campaign_week: date
     port: int = 8765
 
     @property
@@ -161,6 +165,9 @@ class LocalWorkspaceApp:
         self._security = security or WorkspaceSecurity()
         self._review = ReviewWeeklyMarketingBrief()
         self._loader = FilesystemResourceLoader(config.resource_root)
+        self._history = LoadCampaignHistory(
+            config.repository_root, self._loader, config.client_id
+        )
         self._stylesheet_path = config.resource_root / "static" / "workspace.css"
 
     def handle(self, request: WorkspaceRequest) -> WorkspaceResponse:
@@ -196,44 +203,43 @@ class LocalWorkspaceApp:
             )
         session, cookie_header = self._session(request)
         try:
-            if path == "/":
+            if path == "/" or path.startswith("/campaign/") or path.startswith("/brief"):
+                selected, page = self._campaign_route(path)
+                campaigns = asyncio.run(self._history.execute())
+                campaign = self._select_campaign(campaigns, selected)
                 messages = {
                     "brief-approved": "Sarah's brief was approved.",
                     "brief-revision-requested": "Revision instructions were recorded for Sarah.",
                 }
                 result = parse_qs(query).get("result", [""])[0]
-                snapshot = asyncio.run(
-                    LoadTodaysWork(
-                        self._config.repository_root,
-                        self._loader,
-                    ).execute(
-                        str(self._config.client_id),
-                        brief_path=self._config.brief_path,
-                        package_path=self._config.package_path,
-                        preview_path=self._config.preview_path,
+                if page == "home":
+                    return self._html(
+                        HTTPStatus.OK,
+                        render_workspace_home(
+                            campaign.snapshot,
+                            campaigns=campaigns,
+                            selected_week=campaign.record.week,
+                            message=messages.get(result),
+                        ),
+                        cookie_header,
                     )
-                )
-                return self._html(
-                    HTTPStatus.OK,
-                    render_workspace_home(snapshot, message=messages.get(result)),
-                    cookie_header,
-                )
-            loaded = self._load_expected_brief()
-            if path == "/brief":
-                return self._html(
-                    HTTPStatus.OK,
-                    render_brief(
-                        loaded.brief,
-                        self._review.available_actions(loaded.brief),
-                    ),
-                    cookie_header,
-                )
-            actions = {
-                "/brief/approve/confirm": "approve",
-                "/brief/revision/confirm": "revision",
-            }
-            action = actions.get(path)
-            if action is not None:
+                loaded = self._load_expected_brief(campaign)
+                if page == "brief":
+                    return self._html(
+                        HTTPStatus.OK,
+                        render_brief(
+                            loaded.brief,
+                            self._review.available_actions(loaded.brief),
+                            campaign_week=campaign.record.week,
+                        ),
+                        cookie_header,
+                    )
+                action = {"approve-confirm": "approve", "revision-confirm": "revision"}.get(page)
+                if action is None:
+                    return self._error(
+                        HTTPStatus.NOT_FOUND,
+                        "That local workspace page was not found.",
+                    )
                 review_action = BriefReviewAction(action)
                 self._review.ensure_action_allowed(loaded.brief, review_action)
                 nonce = self._security.confirmation_nonce(
@@ -250,10 +256,16 @@ class LocalWorkspaceApp:
                         csrf_token=self._security.csrf_token(session),
                         confirmation_nonce=nonce,
                         checksum=loaded.checksum,
+                        campaign_week=campaign.record.week,
                     ),
                     cookie_header,
                 )
             return self._error(HTTPStatus.NOT_FOUND, "That local workspace page was not found.")
+        except CampaignAmbiguityError as error:
+            return self._error(HTTPStatus.CONFLICT, str(error), cookie_header)
+        except CampaignNotFoundError as error:
+            status = HTTPStatus.BAD_REQUEST if "format" in str(error) else HTTPStatus.NOT_FOUND
+            return self._error(status, str(error), cookie_header)
         except BriefArtifactMissingError as error:
             return self._error(HTTPStatus.NOT_FOUND, str(error), cookie_header)
         except (
@@ -261,6 +273,7 @@ class LocalWorkspaceApp:
             BriefArtifactIdentityError,
             BriefReviewError,
             TodaysWorkError,
+            CampaignArtifactError,
         ) as error:
             return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error), cookie_header)
         except (OSError, ValidationError, ValueError) as error:
@@ -286,8 +299,18 @@ class LocalWorkspaceApp:
             self._security.csrf_token(session),
         ):
             return self._error(HTTPStatus.FORBIDDEN, "The CSRF token is missing or invalid.")
-        action = {"/brief/approve": "approve", "/brief/revision": "revision"}.get(path)
-        if action is None:
+        try:
+            selected, action = self._post_campaign_route(path)
+            campaigns = asyncio.run(self._history.execute())
+            campaign = self._select_campaign(campaigns, selected)
+        except CampaignAmbiguityError as error:
+            return self._error(HTTPStatus.CONFLICT, str(error))
+        except CampaignNotFoundError as error:
+            status = HTTPStatus.BAD_REQUEST if "format" in str(error) else HTTPStatus.NOT_FOUND
+            return self._error(status, str(error))
+        except CampaignArtifactError as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
+        if action not in {"approve", "revision"}:
             return self._error(HTTPStatus.NOT_FOUND, "That local action was not found.")
         checksum = self._single(form, "artifact_checksum") or ""
         client_id = self._single(form, "client_id") or ""
@@ -306,7 +329,7 @@ class LocalWorkspaceApp:
             )
         if (
             client_id != str(self._config.client_id)
-            or week != self._config.campaign_week.isoformat()
+            or week != campaign.record.week.isoformat()
         ):
             return self._error(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -315,22 +338,22 @@ class LocalWorkspaceApp:
         try:
             if action == "approve":
                 self._review.approve(
-                    self._config.brief_path,
+                    campaign.record.brief_path,
                     expected_checksum=checksum,
                     expected_client_id=self._config.client_id,
-                    expected_week=self._config.campaign_week,
+                    expected_week=campaign.record.week,
                 )
-                location = "/?result=brief-approved"
+                location = f"/campaign/{week}?result=brief-approved"
             else:
                 note = self._single(form, "revision_note") or ""
                 self._review.request_revision(
-                    self._config.brief_path,
+                    campaign.record.brief_path,
                     note,
                     expected_checksum=checksum,
                     expected_client_id=self._config.client_id,
-                    expected_week=self._config.campaign_week,
+                    expected_week=campaign.record.week,
                 )
-                location = "/?result=brief-revision-requested"
+                location = f"/campaign/{week}?result=brief-revision-requested"
         except BriefArtifactConflictError as error:
             return self._error(HTTPStatus.CONFLICT, str(error))
         except BriefArtifactMissingError as error:
@@ -345,16 +368,65 @@ class LocalWorkspaceApp:
             headers=self._headers({"Location": location}),
         )
 
-    def _load_expected_brief(self) -> LoadedBriefArtifact:
-        loaded = self._review.load(self._config.brief_path)
+    def _load_expected_brief(self, campaign: CampaignView) -> LoadedBriefArtifact:
+        loaded = self._review.load(campaign.record.brief_path)
         if (
             loaded.brief.client_id != self._config.client_id
-            or loaded.brief.week != self._config.campaign_week
+            or loaded.brief.week != campaign.record.week
         ):
             raise BriefArtifactIdentityError(
                 "Sarah's brief does not match the configured client and campaign week."
             )
         return loaded
+
+    @staticmethod
+    def _select_campaign(
+        campaigns: tuple[CampaignView, ...], selected: date | None
+    ) -> CampaignView:
+        if selected is None:
+            return campaigns[-1]
+        matches = [item for item in campaigns if item.record.week == selected]
+        if len(matches) != 1:
+            raise CampaignNotFoundError(
+                f"No campaign exists for {selected.isoformat()}."
+            )
+        return matches[0]
+
+    @staticmethod
+    def _campaign_route(path: str) -> tuple[date | None, str]:
+        if path == "/":
+            return None, "home"
+        legacy = {
+            "/brief": "brief",
+            "/brief/approve/confirm": "approve-confirm",
+            "/brief/revision/confirm": "revision-confirm",
+        }
+        if path in legacy:
+            return None, legacy[path]
+        parts = path.strip("/").split("/")
+        if len(parts) < 2 or parts[0] != "campaign":
+            raise CampaignNotFoundError("That campaign route is not available.")
+        week = parse_campaign_week(parts[1])
+        suffix = parts[2:]
+        pages = {
+            (): "home",
+            ("brief",): "brief",
+            ("brief", "approve", "confirm"): "approve-confirm",
+            ("brief", "revision", "confirm"): "revision-confirm",
+        }
+        page = pages.get(tuple(suffix))
+        if page is None:
+            raise CampaignNotFoundError("That campaign route is not available.")
+        return week, page
+
+    @staticmethod
+    def _post_campaign_route(path: str) -> tuple[date | None, str]:
+        if path in {"/brief/approve", "/brief/revision"}:
+            return None, path.rsplit("/", maxsplit=1)[-1]
+        parts = path.strip("/").split("/")
+        if len(parts) != 4 or parts[0] != "campaign" or parts[2] != "brief":
+            raise CampaignNotFoundError("That local action was not found.")
+        return parse_campaign_week(parts[1]), parts[3]
 
     def _session(self, request: WorkspaceRequest) -> tuple[str, str | None]:
         existing = self._read_session(request)

@@ -553,28 +553,7 @@ def _workspace(args: argparse.Namespace) -> int:
         WorkspaceConfig(
             repository_root=repository_root,
             resource_root=PACKAGE_RESOURCE_ROOT,
-            brief_path=(
-                repository_root
-                / "artifacts"
-                / "weekly-briefs"
-                / "jordan-and-the-fosters-2026-08-03.json"
-            ),
-            package_path=(
-                repository_root
-                / "artifacts"
-                / "visual-enabled"
-                / "2026-08-03"
-                / "jordan-and-the-fosters-2026-08-03-content.json"
-            ),
-            preview_path=(
-                repository_root
-                / "artifacts"
-                / "campaign-previews"
-                / "jordan-and-the-fosters-2026-08-03-content"
-                / "index.html"
-            ),
             client_id=ClientId("jordan-and-the-fosters"),
-            campaign_week=date(2026, 8, 3),
             port=args.port,
         )
     )

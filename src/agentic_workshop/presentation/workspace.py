@@ -1,8 +1,10 @@
 """Escaped HTML pages for the local interactive workspace."""
 
 import html
+from datetime import date
 
 from agentic_workshop.application.brief_review import BriefReviewAction
+from agentic_workshop.application.campaign_history import CampaignView
 from agentic_workshop.application.todays_work import TodaysWorkSnapshot
 from agentic_workshop.domain.marketing import WeeklyMarketingBrief
 
@@ -10,6 +12,8 @@ from agentic_workshop.domain.marketing import WeeklyMarketingBrief
 def render_workspace_home(
     snapshot: TodaysWorkSnapshot,
     *,
+    campaigns: tuple[CampaignView, ...],
+    selected_week: date,
     message: str | None = None,
 ) -> str:
     week = snapshot.campaign_week.isoformat() if snapshot.campaign_week else "Not available"
@@ -32,19 +36,29 @@ def render_workspace_home(
     provenance = "".join(
         f"<li><code>{html.escape(source)}</code></li>" for source in snapshot.provenance
     )
+    campaign_rows = "".join(
+        _campaign_row(campaign, selected_week) for campaign in campaigns
+    )
+    selected_path = f"/campaign/{selected_week.isoformat()}"
     return _page(
         "Today's Work",
         f"""{notice}
         <p class="local">Local workspace — nothing is published.</p>
         <h1>Today's Work</h1>
         <p><strong>{client_name}</strong> · Campaign week {html.escape(week)}</p>
+        <p class="status">Viewing campaign {html.escape(selected_week.isoformat())}</p>
+        <section><h2>Campaigns</h2>
+          <table><thead><tr><th>Week</th><th>Theme</th><th>Sarah</th><th>Casey</th>
+          <th>Generation</th><th>Cover</th><th>Preview</th></tr></thead>
+          <tbody>{campaign_rows}</tbody></table>
+        </section>
         <section><h2>What needs your attention</h2><ul>{attention}</ul></section>
         <section><h2>Sarah's weekly brief</h2>
           <p class="status">{html.escape(snapshot.brief.label)}</p>
           <p><strong>Objective:</strong> {objective}</p>
           <p><strong>Audience:</strong> {audience}</p>
           <p><strong>Theme:</strong> {theme}</p>
-          <p><a href="/brief">Review Sarah's complete brief</a></p>
+          <p><a href="{selected_path}/brief">Review Sarah's complete brief</a></p>
         </section>
         <section><h2>Casey's content package</h2>
           <p class="status">{html.escape(snapshot.content_package.label)}</p>
@@ -64,6 +78,8 @@ def render_workspace_home(
 def render_brief(
     brief: WeeklyMarketingBrief,
     actions: tuple[BriefReviewAction, ...],
+    *,
+    campaign_week: date,
 ) -> str:
     assignments = "".join(
         "<li><strong>"
@@ -82,11 +98,13 @@ def render_brief(
     action_links: list[str] = []
     if BriefReviewAction.APPROVE in actions:
         action_links.append(
-            '<a class="button" href="/brief/approve/confirm">Approve Sarah\'s brief</a>'
+            f'<a class="button" href="/campaign/{campaign_week.isoformat()}/brief/'
+            'approve/confirm">Approve Sarah\'s brief</a>'
         )
     if BriefReviewAction.REQUEST_REVISION in actions:
         action_links.append(
-            '<a class="button secondary" href="/brief/revision/confirm">'
+            f'<a class="button secondary" href="/campaign/{campaign_week.isoformat()}/brief/'
+            'revision/confirm">'
             "Request a revision</a>"
         )
     action_section = (
@@ -97,7 +115,7 @@ def render_brief(
     return _page(
         "Sarah's weekly brief",
         f"""<p class="local">Local workspace — nothing is published.</p>
-        <p><a href="/">← Today's Work</a></p>
+        <p><a href="/campaign/{campaign_week.isoformat()}">← Today's Work</a></p>
         <h1>Sarah's weekly brief</h1>
         <p class="status">{html.escape(brief.approval_state.value.replace("_", " "))}</p>
         {revision}
@@ -123,6 +141,7 @@ def render_confirmation(
     csrf_token: str,
     confirmation_nonce: str,
     checksum: str,
+    campaign_week: date,
 ) -> str:
     revision = action == "revision"
     title = "Request a revision" if revision else "Approve Sarah's brief"
@@ -140,13 +159,14 @@ def render_confirmation(
     return _page(
         title,
         f"""<p class="local">Local workspace — nothing is published.</p>
-        <p><a href="/brief">← Return to Sarah's brief</a></p>
+        <p><a href="/campaign/{campaign_week.isoformat()}/brief">← Return to Sarah's brief</a></p>
         <h1>{html.escape(title)}</h1>
         <p>{html.escape(instructions)}</p>
         <p><strong>Client:</strong> {html.escape(str(brief.client_id))}<br>
         <strong>Campaign week:</strong> {html.escape(brief.week.isoformat())}<br>
         <strong>Current state:</strong> {html.escape(brief.approval_state.value)}</p>
-        <form method="post" action="/brief/{html.escape(action)}">
+        <form method="post"
+              action="/campaign/{campaign_week.isoformat()}/brief/{html.escape(action)}">
           <input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}">
           <input type="hidden" name="confirmation_nonce"
                  value="{html.escape(confirmation_nonce, quote=True)}">
@@ -178,3 +198,22 @@ def _page(title: str, body: str) -> str:
 <title>{html.escape(title)}</title>
 <link rel="stylesheet" href="/workspace.css">
 </head><body>{body}</body></html>"""
+
+
+def _campaign_row(campaign: CampaignView, selected_week: date) -> str:
+    snapshot = campaign.snapshot
+    week = campaign.record.week.isoformat()
+    selected = " (viewing)" if campaign.record.week == selected_week else ""
+    theme = snapshot.strategy.campaign_theme or "Not available"
+    cover = snapshot.asset.availability if snapshot.asset is not None else "missing"
+    return (
+        "<tr>"
+        f'<td><a href="/campaign/{week}">{html.escape(week)}{selected}</a></td>'
+        f"<td>{html.escape(theme)}</td>"
+        f"<td>{html.escape(snapshot.brief.state)}</td>"
+        f"<td>{html.escape(snapshot.content_package.state)}</td>"
+        f"<td>{html.escape(snapshot.generation_method)}</td>"
+        f"<td>{html.escape(cover)}</td>"
+        f"<td>{'available' if snapshot.preview_exists else 'missing'}</td>"
+        "</tr>"
+    )
