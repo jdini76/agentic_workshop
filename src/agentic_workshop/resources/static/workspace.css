@@ -13,6 +13,8 @@ body {
 table { border-collapse: collapse; width: 100%; }
 th, td { border-bottom: 1px solid #d7dce2; padding: .55rem; text-align: left; }
 th { color: #394451; font-size: .9rem; }
+.secondary-details { color: #4d5865; }
+.secondary-details h2 { color: #303943; }
 
 section,
 form {

@@ -28,6 +28,7 @@ from agentic_workshop.adapters.openai_language_model import OpenAILanguageModel
 from agentic_workshop.application.assets import ClientAssetInventory
 from agentic_workshop.application.brief_review import ReviewWeeklyMarketingBrief
 from agentic_workshop.application.content import ContentPackageError, GenerateContentPackage
+from agentic_workshop.application.content_review import ReviewContentPackage
 from agentic_workshop.application.marketing import (
     CLIENT_RESOURCE_TEMPLATE,
     GenerateWeeklyMarketingBrief,
@@ -43,7 +44,7 @@ from agentic_workshop.domain.assets import (
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.identity import ClientId
-from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
+from agentic_workshop.domain.marketing import WeeklyMarketingBrief
 from agentic_workshop.domain.model_attempts import UntrustedModelAttempt
 from agentic_workshop.ports.content_generation import ContentDraftGenerator
 from agentic_workshop.ports.models import LanguageModelError
@@ -241,18 +242,11 @@ def _review(args: argparse.Namespace) -> int:
             service.request_revision(args.brief_file, args.request_revision)
         print(args.brief_file)
         return 0
-    data = artifact.model_dump(mode="json")
+    content_service = ReviewContentPackage()
     if args.approve:
-        data.update(approval_state=BriefApprovalState.APPROVED, revision_note=None)
+        content_service.approve(args.brief_file)
     else:
-        data.update(
-            approval_state=BriefApprovalState.REVISION_REQUESTED,
-            revision_note=args.request_revision,
-        )
-    reviewed_package = ContentPackage.model_validate(data)
-    _write_content_artifacts(
-        reviewed_package, args.brief_file, args.brief_file.with_suffix(".md")
-    )
+        content_service.request_revision(args.brief_file, args.request_revision)
     print(args.brief_file)
     return 0
 

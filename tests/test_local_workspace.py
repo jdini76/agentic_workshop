@@ -23,8 +23,13 @@ from agentic_workshop.application.brief_review import (
     BriefArtifactMissingError,
     ReviewWeeklyMarketingBrief,
 )
+from agentic_workshop.application.content_review import ReviewContentPackage
 from agentic_workshop.cli import build_parser, run
-from agentic_workshop.domain.assets import ClientAssetManifest
+from agentic_workshop.domain.assets import (
+    AssetRecommendation,
+    AssetType,
+    ClientAssetManifest,
+)
 from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.domain.marketing import BriefApprovalState, WeeklyMarketingBrief
@@ -128,6 +133,13 @@ def add_campaign(config: WorkspaceConfig, week: str = "2026-08-10") -> tuple[Pat
         encoding="utf-8",
     )
     return brief_path, package_path
+
+
+def set_package_state(path: Path, state: BriefApprovalState) -> ContentPackage:
+    package = ContentPackage.model_validate_json(path.read_text(encoding="utf-8"))
+    updated = package.model_copy(update={"approval_state": state, "revision_note": None})
+    path.write_text(updated.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return updated
 
 
 def get(app: LocalWorkspaceApp, config: WorkspaceConfig, target: str, cookie: str = ""):
@@ -566,3 +578,196 @@ def test_confirmation_is_bound_to_selected_week_and_redirects_back(tmp_path: Pat
     )
     assert approved.status == 303
     assert approved.headers["Location"].startswith("/campaign/2026-08-10?")
+
+
+def test_complete_casey_package_presentation_and_state_aware_actions(tmp_path: Path) -> None:
+    config = local_config(tmp_path)
+    _, package_path = add_campaign(config, "2026-08-03")
+    package = set_package_state(package_path, BriefApprovalState.DRAFT)
+    recommendation = AssetRecommendation(
+        asset_id="marketing-cover",
+        asset_type=AssetType.FRONT_COVER,
+        repository_path="hidden-from-workspace.png",
+        manifest_source="client-assets/example.json",
+        availability="available",
+        diagnostic="validated",
+        approved_use="content_package_asset_recommendation",
+        permitted_uses=("official_website",),
+    )
+    first = package.drafts[0].model_copy(
+        update={
+            "body": "Safe <script>alert(1)</script> public copy.",
+            "asset_recommendations": (recommendation,),
+        }
+    )
+    package_path.write_text(
+        package.model_copy(update={"drafts": (first, *package.drafts[1:])}).model_dump_json(
+            indent=2
+        ),
+        encoding="utf-8",
+    )
+    before_get = hashlib.sha256(package_path.read_bytes()).hexdigest()
+    app = LocalWorkspaceApp(config, security=WorkspaceSecurity(b"package-page"))
+    page = get(app, config, "/campaign/2026-08-03/package")
+    assert hashlib.sha256(package_path.read_bytes()).hexdigest() == before_get
+    rendered = page.body.decode()
+    assert page.status == 200
+    assert "Safe &lt;script&gt;alert(1)&lt;/script&gt; public copy." in rendered
+    assert "<script>" not in rendered
+    assert "Source provenance" in rendered
+    assert "Approved fact identifiers" in rendered
+    assert "marketing-cover" in rendered
+    assert "official_website" in rendered
+    assert "hidden-from-workspace.png" not in rendered
+    assert "Approve Casey's package" in rendered
+    assert "Request a revision" in rendered
+
+    ReviewContentPackage().approve(package_path)
+    approved = get(app, config, "/campaign/2026-08-03/package").body.decode()
+    assert "Approve Casey's package" not in approved
+    assert "Request a revision" in approved
+    assert '<p class="status">approved</p>' in approved
+    assert "Generation-time assumptions" in approved
+    assert "These assumptions were recorded when Casey generated the package." in approved
+    assert "The current workflow state is shown above." in approved
+    assert "Package assumptions" not in approved
+    assert "This package is a draft and will not be published automatically." in approved
+    ReviewContentPackage().request_revision(package_path, "Use warmer language.")
+    revision = get(app, config, "/campaign/2026-08-03/package").body.decode()
+    assert "Approve Casey's package" not in revision
+    assert "Request a revision" not in revision
+    assert "Use warmer language." in revision
+
+
+def package_confirmation(
+    app: LocalWorkspaceApp,
+    config: WorkspaceConfig,
+    week: str,
+    action: str,
+) -> tuple[str, dict[str, str]]:
+    response = get(app, config, f"/campaign/{week}/package/{action}/confirm")
+    assert response.status == 200
+    cookie = response.headers["Set-Cookie"].split(";", maxsplit=1)[0]
+    fields = dict(
+        re.findall(r'<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"', response.body.decode())
+    )
+    return cookie, fields
+
+
+def package_post(
+    app: LocalWorkspaceApp,
+    config: WorkspaceConfig,
+    week: str,
+    action: str,
+    cookie: str,
+    fields: dict[str, str],
+):
+    return app.handle(
+        WorkspaceRequest(
+            "POST",
+            f"/campaign/{week}/package/{action}",
+            {
+                "Host": config.host_header,
+                "Origin": config.origin,
+                "Cookie": cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            urlencode(fields).encode(),
+        )
+    )
+
+
+def test_casey_approval_revision_security_and_selected_redirect(tmp_path: Path) -> None:
+    config = local_config(tmp_path)
+    _, package_path = add_campaign(config)
+    set_package_state(package_path, BriefApprovalState.DRAFT)
+    app = LocalWorkspaceApp(config, security=WorkspaceSecurity(b"package-actions"))
+    cookie, fields = package_confirmation(app, config, "2026-08-10", "approve")
+    before = hashlib.sha256(package_path.read_bytes()).hexdigest()
+    wrong_csrf = package_post(
+        app, config, "2026-08-10", "approve", cookie, {**fields, "csrf_token": "wrong"}
+    )
+    assert wrong_csrf.status == 403
+    assert hashlib.sha256(package_path.read_bytes()).hexdigest() == before
+    wrong_nonce = package_post(
+        app,
+        config,
+        "2026-08-10",
+        "approve",
+        cookie,
+        {**fields, "confirmation_nonce": "wrong"},
+    )
+    assert wrong_nonce.status == 403
+    wrong_origin = app.handle(
+        WorkspaceRequest(
+            "POST",
+            "/campaign/2026-08-10/package/approve",
+            {
+                "Host": config.host_header,
+                "Origin": "http://evil.example",
+                "Cookie": cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            urlencode(fields).encode(),
+        )
+    )
+    assert wrong_origin.status == 403
+    approved = package_post(app, config, "2026-08-10", "approve", cookie, fields)
+    assert approved.status == 303
+    assert approved.headers["Location"] == "/campaign/2026-08-10?result=package-approved"
+    assert package_post(app, config, "2026-08-10", "approve", cookie, fields).status == 403
+    assert ReviewContentPackage().load(
+        package_path
+    ).package.approval_state is BriefApprovalState.APPROVED
+
+    cookie, fields = package_confirmation(app, config, "2026-08-10", "revision")
+    assert package_post(app, config, "2026-08-10", "revision", cookie, fields).status == 422
+    cookie, fields = package_confirmation(app, config, "2026-08-10", "revision")
+    fields["revision_note"] = "Revise <tone>."
+    revised = package_post(app, config, "2026-08-10", "revision", cookie, fields)
+    assert revised.status == 303
+    stored = ReviewContentPackage().load(package_path).package
+    assert stored.revision_note == "Revise <tone>."
+    rendered = get(app, config, "/campaign/2026-08-10/package").body.decode()
+    assert "Revise &lt;tone&gt;." in rendered
+
+
+def test_casey_rejects_stale_invalid_direct_and_missing_packages(tmp_path: Path) -> None:
+    config = local_config(tmp_path)
+    _, package_path = add_campaign(config, "2026-08-03")
+    set_package_state(package_path, BriefApprovalState.DRAFT)
+    app = LocalWorkspaceApp(config, security=WorkspaceSecurity(b"package-invalid"))
+    cookie, fields = package_confirmation(app, config, "2026-08-03", "approve")
+    package_path.write_bytes(package_path.read_bytes() + b"\n")
+    assert package_post(app, config, "2026-08-03", "approve", cookie, fields).status == 409
+
+    set_package_state(package_path, BriefApprovalState.APPROVED)
+    assert get(app, config, "/campaign/2026-08-03/package/approve/confirm").status == 422
+
+    package_path.unlink()
+    assert get(app, config, "/campaign/2026-08-03/package").status == 404
+
+    _, package_path = add_campaign(config, "2026-08-03")
+    package_path.write_text("not json", encoding="utf-8")
+    assert get(LocalWorkspaceApp(config), config, "/campaign/2026-08-03/package").status == 422
+
+
+def test_casey_rejects_client_and_week_mismatched_packages(tmp_path: Path) -> None:
+    config = local_config(tmp_path)
+    _, package_path = add_campaign(config, "2026-08-03")
+    package = ContentPackage.model_validate_json(package_path.read_text(encoding="utf-8"))
+    package_path.write_text(
+        package.model_copy(update={"client_id": ClientId("wrong-client")}).model_dump_json(),
+        encoding="utf-8",
+    )
+    assert get(LocalWorkspaceApp(config), config, "/campaign/2026-08-03/package").status == 422
+
+    _, package_path = add_campaign(config, "2026-08-03")
+    package = ContentPackage.model_validate_json(package_path.read_text(encoding="utf-8"))
+    package_path.write_text(
+        package.model_copy(update={"week": date(2026, 8, 10)}).model_dump_json(),
+        encoding="utf-8",
+    )
+    response = get(LocalWorkspaceApp(config), config, "/campaign/2026-08-03/package")
+    assert response.status == 422
+    assert "week does not match its filename" in response.body.decode()

@@ -37,11 +37,23 @@ from agentic_workshop.application.campaign_history import (
     LoadCampaignHistory,
     parse_campaign_week,
 )
+from agentic_workshop.application.content_review import (
+    ContentArtifactConflictError,
+    ContentArtifactIdentityError,
+    ContentArtifactInvalidError,
+    ContentArtifactMissingError,
+    ContentReviewAction,
+    ContentReviewError,
+    LoadedContentArtifact,
+    ReviewContentPackage,
+)
 from agentic_workshop.application.todays_work import TodaysWorkError
 from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.presentation.workspace import (
     render_brief,
     render_confirmation,
+    render_package,
+    render_package_confirmation,
     render_workspace_error,
     render_workspace_home,
 )
@@ -102,6 +114,7 @@ class WorkspaceSecurity:
         client_id: ClientId,
         week: date,
         checksum: str,
+        artifact_identity: str = "brief",
     ) -> str:
         payload = json.dumps(
             {
@@ -109,6 +122,7 @@ class WorkspaceSecurity:
                 "client_id": str(client_id),
                 "week": week.isoformat(),
                 "checksum": checksum,
+                "artifact_identity": artifact_identity,
                 "expires": int(time.time()) + 600,
                 "random": secrets.token_urlsafe(18),
             },
@@ -127,6 +141,7 @@ class WorkspaceSecurity:
         client_id: str,
         week: str,
         checksum: str,
+        artifact_identity: str = "brief",
     ) -> bool:
         if token in self._used_nonces:
             return False
@@ -142,6 +157,7 @@ class WorkspaceSecurity:
                 and payload["client_id"] == client_id
                 and payload["week"] == week
                 and payload["checksum"] == checksum
+                and payload["artifact_identity"] == artifact_identity
                 and int(payload["expires"]) >= int(time.time())
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -164,6 +180,7 @@ class LocalWorkspaceApp:
         self._config = config
         self._security = security or WorkspaceSecurity()
         self._review = ReviewWeeklyMarketingBrief()
+        self._content_review = ReviewContentPackage()
         self._loader = FilesystemResourceLoader(config.resource_root)
         self._history = LoadCampaignHistory(
             config.repository_root, self._loader, config.client_id
@@ -210,6 +227,10 @@ class LocalWorkspaceApp:
                 messages = {
                     "brief-approved": "Sarah's brief was approved.",
                     "brief-revision-requested": "Revision instructions were recorded for Sarah.",
+                    "package-approved": "Casey's package was approved.",
+                    "package-revision-requested": (
+                        "Revision instructions were recorded for Casey."
+                    ),
                 }
                 result = parse_qs(query).get("result", [""])[0]
                 if page == "home":
@@ -220,6 +241,52 @@ class LocalWorkspaceApp:
                             campaigns=campaigns,
                             selected_week=campaign.record.week,
                             message=messages.get(result),
+                        ),
+                        cookie_header,
+                    )
+                if page.startswith("package"):
+                    loaded_package = self._load_expected_package(campaign)
+                    if page == "package":
+                        return self._html(
+                            HTTPStatus.OK,
+                            render_package(
+                                loaded_package.package,
+                                self._content_review.available_actions(
+                                    loaded_package.package
+                                ),
+                                campaign_week=campaign.record.week,
+                            ),
+                            cookie_header,
+                        )
+                    action = {
+                        "package-approve-confirm": "approve",
+                        "package-revision-confirm": "revision",
+                    }.get(page)
+                    if action is None:
+                        return self._error(
+                            HTTPStatus.NOT_FOUND,
+                            "That local workspace page was not found.",
+                        )
+                    content_action = ContentReviewAction(action)
+                    self._content_review.ensure_action_allowed(
+                        loaded_package.package, content_action
+                    )
+                    nonce = self._security.confirmation_nonce(
+                        action=action,
+                        client_id=loaded_package.package.client_id,
+                        week=loaded_package.package.week,
+                        checksum=loaded_package.checksum,
+                        artifact_identity=loaded_package.package.package_id,
+                    )
+                    return self._html(
+                        HTTPStatus.OK,
+                        render_package_confirmation(
+                            loaded_package.package,
+                            action=action,
+                            csrf_token=self._security.csrf_token(session),
+                            confirmation_nonce=nonce,
+                            checksum=loaded_package.checksum,
+                            campaign_week=campaign.record.week,
                         ),
                         cookie_header,
                     )
@@ -268,12 +335,17 @@ class LocalWorkspaceApp:
             return self._error(status, str(error), cookie_header)
         except BriefArtifactMissingError as error:
             return self._error(HTTPStatus.NOT_FOUND, str(error), cookie_header)
+        except ContentArtifactMissingError as error:
+            return self._error(HTTPStatus.NOT_FOUND, str(error), cookie_header)
         except (
             BriefArtifactInvalidError,
             BriefArtifactIdentityError,
             BriefReviewError,
             TodaysWorkError,
             CampaignArtifactError,
+            ContentArtifactInvalidError,
+            ContentArtifactIdentityError,
+            ContentReviewError,
         ) as error:
             return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error), cookie_header)
         except (OSError, ValidationError, ValueError) as error:
@@ -300,7 +372,7 @@ class LocalWorkspaceApp:
         ):
             return self._error(HTTPStatus.FORBIDDEN, "The CSRF token is missing or invalid.")
         try:
-            selected, action = self._post_campaign_route(path)
+            selected, workflow, action = self._post_campaign_route(path)
             campaigns = asyncio.run(self._history.execute())
             campaign = self._select_campaign(campaigns, selected)
         except CampaignAmbiguityError as error:
@@ -312,6 +384,14 @@ class LocalWorkspaceApp:
             return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
         if action not in {"approve", "revision"}:
             return self._error(HTTPStatus.NOT_FOUND, "That local action was not found.")
+        artifact_identity = "brief"
+        if workflow == "package":
+            if campaign.record.package is None:
+                return self._error(
+                    HTTPStatus.NOT_FOUND,
+                    "Casey's content package is missing for this campaign.",
+                )
+            artifact_identity = campaign.record.package.package_id
         checksum = self._single(form, "artifact_checksum") or ""
         client_id = self._single(form, "client_id") or ""
         week = self._single(form, "week") or ""
@@ -322,6 +402,7 @@ class LocalWorkspaceApp:
             client_id=client_id,
             week=week,
             checksum=checksum,
+            artifact_identity=artifact_identity,
         ):
             return self._error(
                 HTTPStatus.FORBIDDEN,
@@ -336,7 +417,26 @@ class LocalWorkspaceApp:
                 "The confirmed artifact does not match the current campaign.",
             )
         try:
-            if action == "approve":
+            if workflow == "package":
+                if action == "approve":
+                    self._content_review.approve(
+                        campaign.record.package_path,
+                        expected_checksum=checksum,
+                        expected_client_id=self._config.client_id,
+                        expected_week=campaign.record.week,
+                    )
+                    location = f"/campaign/{week}?result=package-approved"
+                else:
+                    note = self._single(form, "revision_note") or ""
+                    self._content_review.request_revision(
+                        campaign.record.package_path,
+                        note,
+                        expected_checksum=checksum,
+                        expected_client_id=self._config.client_id,
+                        expected_week=campaign.record.week,
+                    )
+                    location = f"/campaign/{week}?result=package-revision-requested"
+            elif action == "approve":
                 self._review.approve(
                     campaign.record.brief_path,
                     expected_checksum=checksum,
@@ -362,6 +462,14 @@ class LocalWorkspaceApp:
             return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
         except BriefReviewError as error:
             return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
+        except ContentArtifactConflictError as error:
+            return self._error(HTTPStatus.CONFLICT, str(error))
+        except ContentArtifactMissingError as error:
+            return self._error(HTTPStatus.NOT_FOUND, str(error))
+        except ContentArtifactIdentityError as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
+        except ContentReviewError as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
         return WorkspaceResponse(
             status=HTTPStatus.SEE_OTHER,
             body=b"",
@@ -376,6 +484,17 @@ class LocalWorkspaceApp:
         ):
             raise BriefArtifactIdentityError(
                 "Sarah's brief does not match the configured client and campaign week."
+            )
+        return loaded
+
+    def _load_expected_package(self, campaign: CampaignView) -> LoadedContentArtifact:
+        loaded = self._content_review.load(campaign.record.package_path)
+        if (
+            loaded.package.client_id != self._config.client_id
+            or loaded.package.week != campaign.record.week
+        ):
+            raise ContentArtifactIdentityError(
+                "Casey's package does not match the configured client and campaign week."
             )
         return loaded
 
@@ -413,6 +532,9 @@ class LocalWorkspaceApp:
             ("brief",): "brief",
             ("brief", "approve", "confirm"): "approve-confirm",
             ("brief", "revision", "confirm"): "revision-confirm",
+            ("package",): "package",
+            ("package", "approve", "confirm"): "package-approve-confirm",
+            ("package", "revision", "confirm"): "package-revision-confirm",
         }
         page = pages.get(tuple(suffix))
         if page is None:
@@ -420,13 +542,17 @@ class LocalWorkspaceApp:
         return week, page
 
     @staticmethod
-    def _post_campaign_route(path: str) -> tuple[date | None, str]:
+    def _post_campaign_route(path: str) -> tuple[date | None, str, str]:
         if path in {"/brief/approve", "/brief/revision"}:
-            return None, path.rsplit("/", maxsplit=1)[-1]
+            return None, "brief", path.rsplit("/", maxsplit=1)[-1]
         parts = path.strip("/").split("/")
-        if len(parts) != 4 or parts[0] != "campaign" or parts[2] != "brief":
+        if (
+            len(parts) != 4
+            or parts[0] != "campaign"
+            or parts[2] not in {"brief", "package"}
+        ):
             raise CampaignNotFoundError("That local action was not found.")
-        return parse_campaign_week(parts[1]), parts[3]
+        return parse_campaign_week(parts[1]), parts[2], parts[3]
 
     def _session(self, request: WorkspaceRequest) -> tuple[str, str | None]:
         existing = self._read_session(request)

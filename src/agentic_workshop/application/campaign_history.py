@@ -1,6 +1,7 @@
 """Typed, deterministic discovery of local campaign artifacts."""
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -149,6 +150,14 @@ class LoadCampaignHistory:
             if artifact.client_id != self._client_id:
                 raise CampaignArtifactError(
                     f"Campaign artifact client does not match {self._client_id}: {path.name}"
+                )
+            week_match = re.search(r"\d{4}-\d{2}-\d{2}", path.name)
+            if (
+                week_match is not None
+                and parse_campaign_week(week_match.group()) != artifact.week
+            ):
+                raise CampaignArtifactError(
+                    f"Campaign artifact week does not match its filename: {path.name}"
                 )
             if artifact.week in found:
                 raise CampaignAmbiguityError(

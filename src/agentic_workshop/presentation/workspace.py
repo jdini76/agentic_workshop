@@ -5,7 +5,9 @@ from datetime import date
 
 from agentic_workshop.application.brief_review import BriefReviewAction
 from agentic_workshop.application.campaign_history import CampaignView
+from agentic_workshop.application.content_review import ContentReviewAction
 from agentic_workshop.application.todays_work import TodaysWorkSnapshot
+from agentic_workshop.domain.content import ContentDraft, ContentPackage
 from agentic_workshop.domain.marketing import WeeklyMarketingBrief
 
 
@@ -40,6 +42,11 @@ def render_workspace_home(
         _campaign_row(campaign, selected_week) for campaign in campaigns
     )
     selected_path = f"/campaign/{selected_week.isoformat()}"
+    package_link = (
+        f'<p><a href="{selected_path}/package">Review Casey\'s complete package</a></p>'
+        if snapshot.content_package.state != "missing"
+        else "<p>Casey's package is pending.</p>"
+    )
     return _page(
         "Today's Work",
         f"""{notice}
@@ -64,6 +71,7 @@ def render_workspace_home(
           <p class="status">{html.escape(snapshot.content_package.label)}</p>
           <p>Generation method: {html.escape(snapshot.generation_method)}</p>
           {drafts}
+          {package_link}
         </section>
         <section><h2>Campaign cover and preview</h2>
           <p>{asset}</p>
@@ -191,6 +199,103 @@ def render_workspace_error(title: str, message: str) -> str:
     )
 
 
+def render_package(
+    package: ContentPackage,
+    actions: tuple[ContentReviewAction, ...],
+    *,
+    campaign_week: date,
+) -> str:
+    drafts = "".join(_render_content_draft(draft) for draft in package.drafts)
+    assumptions = _list_items(package.assumptions)
+    missing = _list_items(package.missing_assets_or_information)
+    assumption_explanation = html.escape(
+        "These assumptions were recorded when Casey generated the package. "
+        "The current workflow state is shown above."
+    )
+    revision = (
+        f"<p><strong>Revision instructions:</strong> {html.escape(package.revision_note)}</p>"
+        if package.revision_note
+        else ""
+    )
+    links: list[str] = []
+    base = f"/campaign/{campaign_week.isoformat()}/package"
+    if ContentReviewAction.APPROVE in actions:
+        links.append(
+            f'<a class="button" href="{base}/approve/confirm">'
+            "Approve Casey's package</a>"
+        )
+    if ContentReviewAction.REQUEST_REVISION in actions:
+        links.append(
+            f'<a class="button secondary" href="{base}/revision/confirm">Request a revision</a>'
+        )
+    action_section = (
+        f'<div class="actions">{"".join(links)}</div>'
+        if links
+        else "<p>No review action is available until Casey regenerates a draft.</p>"
+    )
+    return _page(
+        "Casey's content package",
+        f"""<p class="local">Local workspace — nothing is published.</p>
+        <p><a href="/campaign/{campaign_week.isoformat()}">← Today's Work</a></p>
+        <h1>Casey's content package</h1>
+        <p class="status">{html.escape(package.approval_state.value.replace('_', ' '))}</p>
+        <p>Generation method: {html.escape(package.generation_metadata.generator)}</p>
+        {revision}
+        {drafts}
+        <section class="secondary-details"><h2>Generation-time assumptions</h2>
+          <p>{assumption_explanation}</p><ul>{assumptions}</ul>
+        </section>
+        <section><h2>Missing assets or information</h2><ul>{missing}</ul></section>
+        {action_section}""",
+    )
+
+
+def render_package_confirmation(
+    package: ContentPackage,
+    *,
+    action: str,
+    csrf_token: str,
+    confirmation_nonce: str,
+    checksum: str,
+    campaign_week: date,
+) -> str:
+    revision = action == "revision"
+    title = "Request a revision" if revision else "Approve Casey's package"
+    instructions = (
+        "Explain exactly what Casey should change. Revision instructions are required."
+        if revision
+        else "Confirm that this package is accepted for review. This does not publish anything."
+    )
+    textarea = (
+        '<label for="revision_note">Revision instructions</label>'
+        '<textarea id="revision_note" name="revision_note" required></textarea>'
+        if revision
+        else ""
+    )
+    return _page(
+        title,
+        f"""<p class="local">Local workspace — nothing is published.</p>
+        <p><a href="/campaign/{campaign_week.isoformat()}/package">
+        ← Return to Casey's package</a></p>
+        <h1>{html.escape(title)}</h1><p>{html.escape(instructions)}</p>
+        <p><strong>Package:</strong> {html.escape(package.package_id)}<br>
+        <strong>Campaign week:</strong> {html.escape(package.week.isoformat())}<br>
+        <strong>Current state:</strong> {html.escape(package.approval_state.value)}</p>
+        <form method="post"
+              action="/campaign/{campaign_week.isoformat()}/package/{html.escape(action)}">
+          <input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}">
+          <input type="hidden" name="confirmation_nonce"
+                 value="{html.escape(confirmation_nonce, quote=True)}">
+          <input type="hidden" name="artifact_checksum" value="{html.escape(checksum, quote=True)}">
+          <input type="hidden" name="client_id"
+                 value="{html.escape(str(package.client_id), quote=True)}">
+          <input type="hidden" name="week"
+                 value="{html.escape(package.week.isoformat(), quote=True)}">
+          {textarea}<button type="submit">{html.escape(title)}</button>
+        </form>""",
+    )
+
+
 def _page(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -217,3 +322,31 @@ def _campaign_row(campaign: CampaignView, selected_week: date) -> str:
         f"<td>{'available' if snapshot.preview_exists else 'missing'}</td>"
         "</tr>"
     )
+
+
+def _render_content_draft(draft: ContentDraft) -> str:
+    sources = _list_items(draft.source_references, code=True)
+    facts = _list_items(draft.approved_facts_used, code=True)
+    assets = "".join(
+        "<li><strong>"
+        f"{html.escape(item.asset_id)}</strong> — {html.escape(item.availability)}; "
+        f"permitted uses: {html.escape(', '.join(item.permitted_uses) or 'none')}</li>"
+        for item in draft.asset_recommendations
+    ) or "<li>No asset recommendation.</li>"
+    return (
+        f"<article><p><strong>{html.escape(draft.channel)}</strong></p>"
+        f"<h2>{html.escape(draft.title)}</h2>"
+        f'<div class="public-copy">{html.escape(draft.body).replace(chr(10), "<br>")}</div>'
+        "<details><summary>Sources, facts, and asset details</summary>"
+        f"<h3>Source provenance</h3><ul>{sources}</ul>"
+        f"<h3>Approved fact identifiers</h3><ul>{facts}</ul>"
+        f"<h3>Asset recommendations</h3><ul>{assets}</ul></details></article>"
+    )
+
+
+def _list_items(items: tuple[str, ...], *, code: bool = False) -> str:
+    if not items:
+        return "<li>None.</li>"
+    if code:
+        return "".join(f"<li><code>{html.escape(item)}</code></li>" for item in items)
+    return "".join(f"<li>{html.escape(item)}</li>" for item in items)
