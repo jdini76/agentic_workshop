@@ -162,6 +162,29 @@ copies the validated metadata-clean derivative beside an escaped static HTML fil
 image bytes, start a server, contact external destinations, or expose publish/upload/send actions.
 Existing previews are preserved unless `--overwrite` is supplied explicitly.
 
+## Today's Work dashboard
+
+Generate the read-only local workspace dashboard with one command:
+
+```console
+agentic-workshop todays-work
+```
+
+The command prints the path to a static `index.html` beneath the ignored
+`artifacts/todays-work/` directory. Open that file locally to review the current campaign strategy,
+Sarah and Casey approval states, website and social draft summaries, the validated marketing-cover
+recommendation, and a link to the local campaign preview when one exists. The dashboard clearly
+lists missing work and items needing attention instead of failing when optional campaign artifacts
+are absent.
+
+The dashboard is a local review aid only. It does not start a server, run a model, edit or approve
+work, publish content, upload assets, or contact external destinations. Existing dashboards are
+preserved; regenerate intentionally with:
+
+```console
+agentic-workshop todays-work --overwrite
+```
+
 Content drafting defaults to an async deterministic adapter. The application service depends on
 the provider-neutral `ContentDraftGenerator` port and independently enforces approval, assignment
 coverage, client matching, approved-fact provenance, brand voice, and source references. A future

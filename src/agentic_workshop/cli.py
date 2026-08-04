@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
@@ -31,6 +32,7 @@ from agentic_workshop.application.marketing import (
     MarketingBriefError,
 )
 from agentic_workshop.application.preview import GenerateCampaignPreview
+from agentic_workshop.application.todays_work import LoadTodaysWork
 from agentic_workshop.domain.assets import (
     AssetApprovalState,
     AssetRecommendation,
@@ -45,6 +47,7 @@ from agentic_workshop.ports.content_generation import ContentDraftGenerator
 from agentic_workshop.ports.models import LanguageModelError
 from agentic_workshop.presentation.content_markdown import render_content_package
 from agentic_workshop.presentation.markdown import render_weekly_marketing_brief
+from agentic_workshop.presentation.todays_work import render_todays_work
 
 PACKAGE_RESOURCE_ROOT = Path(__file__).parent / "resources"
 DEFAULT_ARTIFACT_ROOT = Path("artifacts") / "weekly-briefs"
@@ -52,6 +55,7 @@ DEFAULT_CONTENT_ARTIFACT_ROOT = Path("artifacts") / "content-packages"
 DEFAULT_MODEL_ARTIFACT_ROOT = Path("artifacts") / "model-content-packages"
 DEFAULT_LIVE_SMOKE_ARTIFACT_ROOT = Path("artifacts") / "live-smoke" / "openai"
 DEFAULT_PREVIEW_ROOT = Path("artifacts") / "campaign-previews"
+DEFAULT_TODAYS_WORK_ROOT = Path("artifacts") / "todays-work"
 CASEY_PROMPT_RESOURCE = "prompts/casey-content-creator.v1.md"
 ASSET_MANIFEST_TEMPLATE = "client-assets/{client_id}.v1.json"
 
@@ -123,6 +127,36 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--preview-root", type=Path, default=DEFAULT_PREVIEW_ROOT)
     preview.add_argument("--overwrite", action="store_true")
 
+    todays_work = subparsers.add_parser(
+        "todays-work", help="generate the local read-only Today's Work dashboard"
+    )
+    todays_work.add_argument("--client-id", default="jordan-and-the-fosters")
+    todays_work.add_argument(
+        "--brief-file",
+        type=Path,
+        default=Path("artifacts/weekly-briefs/jordan-and-the-fosters-2026-08-03.json"),
+    )
+    todays_work.add_argument(
+        "--package-file",
+        type=Path,
+        default=Path(
+            "artifacts/visual-enabled/2026-08-03/"
+            "jordan-and-the-fosters-2026-08-03-content.json"
+        ),
+    )
+    todays_work.add_argument(
+        "--preview-file",
+        type=Path,
+        default=Path(
+            "artifacts/campaign-previews/"
+            "jordan-and-the-fosters-2026-08-03-content/index.html"
+        ),
+    )
+    todays_work.add_argument("--resource-root", type=Path, default=PACKAGE_RESOURCE_ROOT)
+    todays_work.add_argument("--repository-root", type=Path, default=Path.cwd())
+    todays_work.add_argument("--dashboard-root", type=Path, default=DEFAULT_TODAYS_WORK_ROOT)
+    todays_work.add_argument("--overwrite", action="store_true")
+
     review = subparsers.add_parser("review", help="review an existing brief JSON file")
     review.add_argument("brief_file", type=Path)
     decision = review.add_mutually_exclusive_group(required=True)
@@ -149,6 +183,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             return _asset_review(args)
         if args.command == "campaign-preview":
             return _campaign_preview(args)
+        if args.command == "todays-work":
+            return _todays_work(args)
         return _review(args)
     except (
         ContentPackageError,
@@ -437,6 +473,57 @@ def _campaign_preview(args: argparse.Namespace) -> int:
     )
     print(preview.html_path)
     print(preview.asset_path)
+    return 0
+
+
+def _todays_work(args: argparse.Namespace) -> int:
+    repository_root = args.repository_root.resolve(strict=True)
+    allowed_root = (repository_root / "artifacts" / "todays-work").resolve(strict=False)
+    dashboard_root = args.dashboard_root.resolve(strict=False)
+    if not dashboard_root.is_relative_to(allowed_root):
+        raise ValueError("dashboard output must remain beneath artifacts/todays-work")
+    loader = FilesystemResourceLoader(args.resource_root)
+    snapshot = asyncio.run(
+        LoadTodaysWork(repository_root, loader).execute(
+            args.client_id,
+            brief_path=args.brief_file,
+            package_path=args.package_file,
+            preview_path=args.preview_file,
+        )
+    )
+    week = snapshot.campaign_week.isoformat() if snapshot.campaign_week else "current"
+    destination = (dashboard_root / f"{snapshot.client_id}-{week}").resolve(strict=False)
+    if not destination.is_relative_to(dashboard_root):
+        raise ValueError("dashboard destination escapes its configured root")
+    if destination.exists() and not args.overwrite:
+        raise ValueError(
+            f"dashboard already exists: {destination}; pass --overwrite to replace it"
+        )
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    asset_relative: str | None = None
+    if snapshot.asset_source_path is not None:
+        asset_directory = destination / "assets"
+        asset_directory.mkdir()
+        copied_asset = asset_directory / snapshot.asset_source_path.name
+        shutil.copyfile(snapshot.asset_source_path, copied_asset)
+        asset_relative = copied_asset.relative_to(destination).as_posix()
+    preview_relative = (
+        Path(os.path.relpath(snapshot.preview_source_path, destination)).as_posix()
+        if snapshot.preview_source_path is not None
+        else None
+    )
+    dashboard = destination / "index.html"
+    dashboard.write_text(
+        render_todays_work(
+            snapshot,
+            asset_path=asset_relative,
+            preview_path=preview_relative,
+        ),
+        encoding="utf-8",
+    )
+    print(dashboard)
     return 0
 
 
