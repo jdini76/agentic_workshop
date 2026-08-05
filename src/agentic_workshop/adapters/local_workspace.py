@@ -54,7 +54,18 @@ from agentic_workshop.application.deterministic_content import (
     GenerateDeterministicContentPackage,
     combined_generation_checksum,
 )
+from agentic_workshop.application.preview import CampaignPreviewError
+from agentic_workshop.application.preview_status import (
+    MANIFEST_RESOURCE_TEMPLATE,
+    PREVIEW_ROUTE_GUIDANCE,
+    GenerateVerifiedCampaignPreview,
+    PreviewStatusService,
+    PreviewWorkflowConflictError,
+    PreviewWorkflowError,
+    asset_binding,
+)
 from agentic_workshop.application.todays_work import TodaysWorkError
+from agentic_workshop.domain.assets import ClientAssetManifest
 from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.presentation.workspace import (
     render_brief,
@@ -62,6 +73,7 @@ from agentic_workshop.presentation.workspace import (
     render_generation_confirmation,
     render_package,
     render_package_confirmation,
+    render_preview_confirmation,
     render_workspace_error,
     render_workspace_home,
 )
@@ -194,10 +206,15 @@ class LocalWorkspaceApp:
             config.repository_root,
             self._loader,
         )
+        self._preview_status = PreviewStatusService(config.repository_root, self._loader)
+        self._preview_generation = GenerateVerifiedCampaignPreview(
+            config.repository_root, self._loader
+        )
         self._history = LoadCampaignHistory(
             config.repository_root, self._loader, config.client_id
         )
         self._stylesheet_path = config.resource_root / "static" / "workspace.css"
+        self._preview_stylesheet_path = config.resource_root / "static" / "preview.css"
 
     def handle(self, request: WorkspaceRequest) -> WorkspaceResponse:
         if request.headers.get("Host") != self._config.host_header:
@@ -238,6 +255,18 @@ class LocalWorkspaceApp:
                 body=stylesheet,
                 headers=self._headers(content_type="text/css; charset=utf-8"),
             )
+        if path == "/preview.css":
+            if query:
+                return self._error(HTTPStatus.BAD_REQUEST, "Stylesheet parameters are invalid.")
+            try:
+                stylesheet = self._preview_stylesheet_path.read_bytes()
+            except FileNotFoundError:
+                return self._error(HTTPStatus.NOT_FOUND, "The preview stylesheet is missing.")
+            return WorkspaceResponse(
+                status=HTTPStatus.OK,
+                body=stylesheet,
+                headers=self._headers(content_type="text/css; charset=utf-8"),
+            )
         session, cookie_header = self._session(request)
         try:
             if path == "/" or path.startswith("/campaign/") or path.startswith("/brief"):
@@ -262,6 +291,13 @@ class LocalWorkspaceApp:
                             selected_week=campaign.record.week,
                             message=messages.get(result),
                         ),
+                        cookie_header,
+                    )
+                if page.startswith("preview"):
+                    return self._get_preview_page(
+                        page,
+                        campaign,
+                        session,
                         cookie_header,
                     )
                 if page.startswith("package"):
@@ -468,6 +504,8 @@ class LocalWorkspaceApp:
         if action not in {"approve", "revision"}:
             if workflow == "package" and action == "generate":
                 return self._post_generation(form, campaign)
+            if workflow == "preview" and action == "generate":
+                return self._post_preview_generation(form, campaign)
             return self._route_error(
                 path,
                 HTTPStatus.NOT_FOUND,
@@ -652,6 +690,230 @@ class LocalWorkspaceApp:
             ),
         )
 
+    def _get_preview_page(
+        self,
+        page: str,
+        campaign: CampaignView,
+        session: str,
+        cookie_header: str | None,
+    ) -> WorkspaceResponse:
+        status = asyncio.run(
+            self._preview_status.inspect(
+                client_id=self._config.client_id,
+                week=campaign.record.week,
+                package_path=campaign.record.package_path,
+                preview_directory=campaign.record.preview_path.parent,
+            )
+        )
+        if page == "preview":
+            if status.state != "current" or status.provenance is None:
+                status_code = {
+                    "missing": HTTPStatus.NOT_FOUND,
+                    "stale": HTTPStatus.CONFLICT,
+                    "unverified": HTTPStatus.CONFLICT,
+                    "invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                }[status.state]
+                return self._preview_error(
+                    campaign.record.week,
+                    status_code,
+                    status.diagnostic,
+                    preview_state=status.state,
+                )
+            try:
+                content = campaign.record.preview_path.read_bytes()
+            except OSError:
+                return self._preview_error(
+                    campaign.record.week, HTTPStatus.NOT_FOUND, "Preview HTML is missing."
+                )
+            return WorkspaceResponse(
+                status=HTTPStatus.OK,
+                body=content,
+                headers=self._headers(content_type="text/html; charset=utf-8"),
+            )
+        if page.startswith("preview-asset:"):
+            return self._serve_preview_asset(page.split(":", 1)[1], campaign, status)
+        if page != "preview-generate-confirm":
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.NOT_FOUND, "Preview route not found."
+            )
+        loaded = self._load_expected_package(campaign)
+        if loaded.package.approval_state.value != "approved":
+            return self._preview_error(
+                campaign.record.week,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "Casey's package must be approved first.",
+            )
+        if status.state == "current":
+            return self._preview_error(
+                campaign.record.week,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "The current preview does not need regeneration.",
+            )
+        manifest = ClientAssetManifest.model_validate_json(
+            asyncio.run(
+                self._loader.load_text(
+                    MANIFEST_RESOURCE_TEMPLATE.format(client_id=self._config.client_id)
+                )
+            )
+        )
+        binding = asset_binding(manifest, loaded.package)
+        bound = combined_generation_checksum(loaded.checksum, binding)
+        nonce = self._security.confirmation_nonce(
+            action="preview-generate",
+            client_id=self._config.client_id,
+            week=campaign.record.week,
+            checksum=bound,
+            artifact_identity=f"{loaded.package.package_id}:{status.state}",
+        )
+        return self._html(
+            HTTPStatus.OK,
+            render_preview_confirmation(
+                campaign_week=campaign.record.week,
+                preview_state=status.state,
+                client_id=str(self._config.client_id),
+                package_id=loaded.package.package_id,
+                package_checksum=loaded.checksum,
+                asset_binding=binding,
+                csrf_token=self._security.csrf_token(session),
+                confirmation_nonce=nonce,
+            ),
+            cookie_header,
+        )
+
+    def _post_preview_generation(
+        self, form: dict[str, list[str]], campaign: CampaignView
+    ) -> WorkspaceResponse:
+        client_id = self._single(form, "client_id") or ""
+        week = self._single(form, "week") or ""
+        package_id = self._single(form, "package_id") or ""
+        package_checksum = self._single(form, "package_checksum") or ""
+        preview_state = self._single(form, "preview_state") or ""
+        asset_checksum = self._single(form, "asset_binding") or ""
+        nonce = self._single(form, "confirmation_nonce") or ""
+        bound = combined_generation_checksum(package_checksum, asset_checksum)
+        if not self._security.consume_confirmation(
+            nonce,
+            action="preview-generate",
+            client_id=client_id,
+            week=week,
+            checksum=bound,
+            artifact_identity=f"{package_id}:{preview_state}",
+        ):
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.FORBIDDEN, "Invalid preview confirmation."
+            )
+        if client_id != str(self._config.client_id) or week != campaign.record.week.isoformat():
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.UNPROCESSABLE_ENTITY, "Campaign mismatch."
+            )
+        try:
+            asyncio.run(
+                self._preview_generation.execute(
+                    client_id=self._config.client_id,
+                    week=campaign.record.week,
+                    package_path=campaign.record.package_path,
+                    expected_package_checksum=package_checksum,
+                    expected_state=preview_state,
+                    expected_asset_binding=asset_checksum,
+                )
+            )
+        except PreviewWorkflowConflictError as error:
+            return self._preview_error(campaign.record.week, HTTPStatus.CONFLICT, str(error))
+        except (PreviewWorkflowError, CampaignPreviewError, ValidationError) as error:
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.UNPROCESSABLE_ENTITY, str(error)
+            )
+        except Exception:
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.INTERNAL_SERVER_ERROR, "Preview generation failed."
+            )
+        return WorkspaceResponse(
+            status=HTTPStatus.SEE_OTHER,
+            body=b"",
+            headers=self._headers(
+                {"Location": f"/campaign/{campaign.record.week.isoformat()}"}
+            ),
+        )
+
+    def _serve_preview_asset(
+        self,
+        name: str,
+        campaign: CampaignView,
+        status: object,
+    ) -> WorkspaceResponse:
+        from agentic_workshop.application.preview_status import PreviewStatus
+
+        if not isinstance(status, PreviewStatus) or status.state != "current":
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.CONFLICT, "Preview is not current."
+            )
+        if (
+            status.provenance is None
+            or not name
+            or name in {".", ".."}
+            or "/" in name
+            or "\\" in name
+            or "%" in name
+        ):
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.NOT_FOUND, "Preview asset not found."
+            )
+        matches = [asset for asset in status.provenance.assets if asset.copied_name == name]
+        if len(matches) != 1:
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.NOT_FOUND, "Preview asset not found."
+            )
+        path = status.preview_directory / "assets" / name
+        try:
+            resolved = path.resolve(strict=True)
+            assets_root = (status.preview_directory / "assets").resolve(strict=True)
+            if path.is_symlink() or not resolved.is_relative_to(assets_root):
+                raise OSError("unsafe preview asset")
+            content = path.read_bytes()
+        except OSError:
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.NOT_FOUND, "Preview asset not found."
+            )
+        if hashlib.sha256(content).hexdigest() != matches[0].copied_sha256:
+            return self._preview_error(
+                campaign.record.week, HTTPStatus.CONFLICT, "Preview asset checksum failed."
+            )
+        return WorkspaceResponse(
+            status=HTTPStatus.OK,
+            body=content,
+            headers=self._headers(content_type="image/png"),
+        )
+
+    def _preview_error(
+        self,
+        week: date,
+        status: int,
+        message: str,
+        cookie_header: str | None = None,
+        preview_state: str | None = None,
+    ) -> WorkspaceResponse:
+        generic_safe = {
+            HTTPStatus.NOT_FOUND: "The requested local preview file is unavailable.",
+            HTTPStatus.CONFLICT: "The preview is no longer current. Regenerate it before review.",
+            HTTPStatus.UNPROCESSABLE_ENTITY: "The preview prerequisites are not satisfied.",
+            HTTPStatus.FORBIDDEN: "The preview request could not be verified.",
+        }.get(HTTPStatus(status), "The local preview could not be prepared.")
+        del message
+        heading, safe = PREVIEW_ROUTE_GUIDANCE.get(
+            preview_state or "",
+            ("Campaign preview isn't ready", generic_safe),
+        )
+        return self._html(
+            status,
+            render_workspace_error(
+                heading,
+                safe,
+                return_path=f"/campaign/{week.isoformat()}",
+                return_label=f"Return to campaign {week.isoformat()}",
+            ),
+            cookie_header,
+        )
+
     def _load_expected_brief(self, campaign: CampaignView) -> LoadedBriefArtifact:
         loaded = self._review.load(campaign.record.brief_path)
         if (
@@ -734,7 +996,11 @@ class LocalWorkspaceApp:
             ("package", "approve", "confirm"): "package-approve-confirm",
             ("package", "revision", "confirm"): "package-revision-confirm",
             ("package", "generate", "confirm"): "package-generate-confirm",
+            ("preview",): "preview",
+            ("preview", "generate", "confirm"): "preview-generate-confirm",
         }
+        if len(suffix) == 3 and suffix[:2] == ["preview", "assets"]:
+            return week, f"preview-asset:{suffix[2]}"
         page = pages.get(tuple(suffix))
         if page is None:
             raise CampaignNotFoundError("That campaign route is not available.")
@@ -748,7 +1014,7 @@ class LocalWorkspaceApp:
         if (
             len(parts) != 4
             or parts[0] != "campaign"
-            or parts[2] not in {"brief", "package"}
+            or parts[2] not in {"brief", "package", "preview"}
         ):
             raise CampaignNotFoundError("That local action was not found.")
         return parse_campaign_week(parts[1]), parts[2], parts[3]
@@ -816,6 +1082,14 @@ class LocalWorkspaceApp:
         message: str,
         cookie_header: str | None = None,
     ) -> WorkspaceResponse:
+        preview_week = self._preview_generation_route_week(path)
+        if preview_week is not None:
+            return self._preview_error(
+                preview_week,
+                status,
+                message,
+                cookie_header,
+            )
         week = self._generation_route_week(path)
         if week is not None:
             return self._campaign_generation_error(
@@ -866,6 +1140,21 @@ class LocalWorkspaceApp:
             len(parts) < 4
             or parts[0] != "campaign"
             or parts[2:4] != ["package", "generate"]
+        ):
+            return None
+        try:
+            return parse_campaign_week(parts[1])
+        except CampaignNotFoundError:
+            return None
+
+    @staticmethod
+    def _preview_generation_route_week(path: str) -> date | None:
+        route_path = urlsplit(path).path
+        parts = route_path.strip("/").split("/")
+        if (
+            len(parts) < 4
+            or parts[0] != "campaign"
+            or parts[2:4] != ["preview", "generate"]
         ):
             return None
         try:

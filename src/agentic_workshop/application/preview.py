@@ -198,41 +198,7 @@ class GenerateCampaignPreview:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Local campaign preview — not published</title>
-  <style>
-    :root {{
-      color-scheme: light;
-      font-family: Georgia, serif;
-      color: #25201d;
-      background: #f4efe7;
-    }}
-    body {{ margin: 0; }}
-    header, main, footer {{ max-width: 1080px; margin: auto; padding: 24px; }}
-    header {{ background: #342e2a; color: white; max-width: none; text-align: center; }}
-    .notice {{ font: 700 1rem system-ui, sans-serif; letter-spacing: .03em; }}
-    .panel {{
-      background: white;
-      border-radius: 16px;
-      margin: 28px 0;
-      padding: 28px;
-      box-shadow: 0 4px 20px #0001;
-    }}
-    .website {{
-      display: grid;
-      grid-template-columns: minmax(240px, 38%) 1fr;
-      gap: 32px;
-      align-items: start;
-    }}
-    img {{ display: block; width: 100%; height: auto; border-radius: 8px; }}
-    .copy {{ white-space: pre-wrap; line-height: 1.55; }}
-    .social {{ max-width: 640px; margin-inline: auto; }}
-    .review {{
-      font: .9rem/1.5 system-ui, sans-serif;
-      background: #e9e2d8;
-      border: 2px dashed #766b61;
-    }}
-    a {{ color: #7b351e; }}
-    @media (max-width: 700px) {{ .website {{ grid-template-columns: 1fr; }} }}
-  </style>
+  <link rel="stylesheet" href="/preview.css">
 </head>
 <body>
   <header><div class="notice">Local campaign preview — not published.</div></header>

@@ -58,6 +58,22 @@ def render_workspace_home(
             f'<p><a class="button" href="{selected_path}/package/generate/confirm">'
             "Regenerate Casey's package</a></p>"
         )
+    preview_action = ""
+    if snapshot.preview_state == "current":
+        preview_action = (
+            f'<a class="button" href="{selected_path}/preview">'
+            "View campaign preview</a>"
+        )
+    elif snapshot.preview_state == "missing":
+        preview_action = (
+            f'<a class="button" href="{selected_path}/preview/generate/confirm">'
+            "Generate campaign preview</a>"
+        )
+    elif snapshot.preview_state in {"stale", "unverified", "invalid"}:
+        preview_action = (
+            f'<a class="button secondary" href="{selected_path}/preview/generate/confirm">'
+            "Regenerate campaign preview</a>"
+        )
     return _page(
         "Today's Work",
         f"""{notice}
@@ -87,7 +103,9 @@ def render_workspace_home(
         </section>
         <section><h2>Campaign cover and preview</h2>
           <p>{asset}</p>
-          <p>Campaign preview: {"available" if snapshot.preview_exists else "not available"}</p>
+          <p>Campaign preview: <strong>{html.escape(snapshot.preview_state)}</strong></p>
+          <p>{html.escape(snapshot.preview_diagnostic)}</p>
+          <p>{preview_action}</p>
         </section>
         <details><summary>Provenance and workflow details</summary>
           <ul>{provenance}</ul>
@@ -362,6 +380,42 @@ def render_generation_confirmation(
     )
 
 
+def render_preview_confirmation(
+    *,
+    campaign_week: date,
+    preview_state: str,
+    client_id: str,
+    package_id: str,
+    package_checksum: str,
+    asset_binding: str,
+    csrf_token: str,
+    confirmation_nonce: str,
+) -> str:
+    verb = "Generate" if preview_state == "missing" else "Regenerate"
+    return _page(
+        f"{verb} campaign preview",
+        f"""<p class="local">Local workspace — nothing is published.</p>
+        <p><a href="/campaign/{campaign_week.isoformat()}">← Today's Work</a></p>
+        <h1>{verb} campaign preview</h1>
+        <p>Current preview state: <strong>{html.escape(preview_state)}</strong>.</p>
+        <p>This creates a local review artifact from Casey's approved package and approved
+        derivative assets. It does not publish, upload, post, send, or contact a model.</p>
+        <form method="post" action="/campaign/{campaign_week.isoformat()}/preview/generate">
+          <input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}">
+          <input type="hidden" name="confirmation_nonce"
+                 value="{html.escape(confirmation_nonce, quote=True)}">
+          <input type="hidden" name="client_id" value="{html.escape(client_id, quote=True)}">
+          <input type="hidden" name="week" value="{campaign_week.isoformat()}">
+          <input type="hidden" name="package_id" value="{html.escape(package_id, quote=True)}">
+          <input type="hidden" name="package_checksum" value="{package_checksum}">
+          <input type="hidden" name="preview_state"
+                 value="{html.escape(preview_state, quote=True)}">
+          <input type="hidden" name="asset_binding" value="{asset_binding}">
+          <button type="submit">{verb} local preview</button>
+        </form>""",
+    )
+
+
 def _page(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -385,7 +439,7 @@ def _campaign_row(campaign: CampaignView, selected_week: date) -> str:
         f"<td>{html.escape(snapshot.content_package.state)}</td>"
         f"<td>{html.escape(snapshot.generation_method)}</td>"
         f"<td>{html.escape(cover)}</td>"
-        f"<td>{'available' if snapshot.preview_exists else 'missing'}</td>"
+        f"<td>{html.escape(snapshot.preview_state)}</td>"
         "</tr>"
     )
 

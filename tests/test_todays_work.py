@@ -122,7 +122,7 @@ def test_complete_workspace_snapshot(tmp_path: Path) -> None:
     assert snapshot.asset.asset_id == "jordan-and-the-fosters-front-cover-marketing-1600h"
     assert snapshot.preview_exists
     assert snapshot.attention == (
-        "Review the local campaign preview; nothing has been published.",
+        "Review the current local campaign preview; nothing has been published.",
     )
 
 
@@ -169,7 +169,7 @@ def test_missing_workspace_has_clear_states_instead_of_errors(tmp_path: Path) ->
     assert snapshot.draft_summaries == ()
     assert "Sarah's weekly brief is missing." in snapshot.attention
     assert "Casey's content package is missing." in snapshot.attention
-    assert "The local campaign preview has not been generated." in snapshot.attention
+    assert "Generate the local campaign preview." in snapshot.attention
 
 
 def test_workspace_rejects_mismatched_client_artifact(tmp_path: Path) -> None:

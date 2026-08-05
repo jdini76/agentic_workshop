@@ -10,6 +10,7 @@ from typing import cast
 from pydantic import ValidationError
 
 from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
+from agentic_workshop.application.preview_status import PREVIEW_ATTENTION, PreviewStatusService
 from agentic_workshop.application.todays_work import LoadTodaysWork, TodaysWorkSnapshot
 from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.identity import ClientId
@@ -78,15 +79,33 @@ class LoadCampaignHistory:
     async def execute(self) -> tuple[CampaignView, ...]:
         records = await asyncio.to_thread(self._discover)
         service = LoadTodaysWork(self._root, self._loader)
+        previews = PreviewStatusService(self._root, self._loader)
         views: list[CampaignView] = []
         for record in records:
+            snapshot = await service.execute(
+                str(self._client_id),
+                brief_path=record.brief_path,
+                package_path=record.package_path,
+                preview_path=record.preview_path,
+            )
+            preview = await previews.inspect(
+                client_id=self._client_id,
+                week=record.week,
+                package_path=record.package_path,
+                preview_directory=record.preview_path.parent,
+            )
             views.append(CampaignView(
                 record=record,
-                snapshot=await service.execute(
-                    str(self._client_id),
-                    brief_path=record.brief_path,
-                    package_path=record.package_path,
-                    preview_path=record.preview_path,
+                snapshot=snapshot.model_copy(
+                    update={
+                        "preview_state": preview.state,
+                        "preview_diagnostic": preview.diagnostic,
+                        "preview_attention": PREVIEW_ATTENTION[preview.state],
+                        "attention": (
+                            *snapshot.attention[:-1],
+                            PREVIEW_ATTENTION[preview.state],
+                        ),
+                    }
                 ),
             ))
         return tuple(views)

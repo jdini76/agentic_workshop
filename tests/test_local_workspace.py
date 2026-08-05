@@ -67,6 +67,10 @@ def local_config(root: Path, *, port: int = 8765) -> WorkspaceConfig:
         RESOURCES / "static" / "workspace.css",
         resources / "static" / "workspace.css",
     )
+    shutil.copyfile(
+        RESOURCES / "static" / "preview.css",
+        resources / "static" / "preview.css",
+    )
     manifest = ClientAssetManifest.model_validate_json(
         manifest_path.read_text(encoding="utf-8")
     )
@@ -499,7 +503,7 @@ def test_campaign_history_reports_missing_package_and_preview(tmp_path: Path) ->
     app = LocalWorkspaceApp(config)
     rendered = get(app, config, "/campaign/2026-08-03").body.decode()
     assert "content package is waiting for Sarah" in rendered
-    assert "Campaign preview: not available" in rendered
+    assert "Campaign preview: <strong>missing</strong>" in rendered
     assert ">missing</td>" in rendered
 
 

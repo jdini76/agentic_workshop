@@ -61,6 +61,11 @@ class TodaysWorkSnapshot(DomainModel):
     draft_summaries: tuple[DraftSummary, ...]
     asset: AssetSummary | None
     preview_exists: bool
+    preview_state: Literal["missing", "current", "stale", "unverified", "invalid"] = (
+        "missing"
+    )
+    preview_diagnostic: NonBlank = "No local campaign preview exists."
+    preview_attention: NonBlank = "Generate the local campaign preview."
     attention: tuple[NonBlank, ...]
     provenance: tuple[NonBlank, ...]
     generation_method: NonBlank
@@ -108,7 +113,12 @@ class LoadTodaysWork:
         preview = self._safe_artifact_path(preview_path)
         preview_exists = preview.is_file()
         asset, asset_source = await self._asset_summary(manifest, package)
-        attention = self._attention(brief, package, asset, preview_exists)
+        preview_attention = (
+            "Review the current local campaign preview; nothing has been published."
+            if preview_exists
+            else "Generate the local campaign preview."
+        )
+        attention = self._attention(brief, package, asset, preview_attention)
         week = brief.week if brief is not None else package.week if package is not None else None
         strategy = StrategySummary(
             objective=brief.objective if brief is not None else None,
@@ -144,6 +154,7 @@ class LoadTodaysWork:
             draft_summaries=self._draft_summaries(package),
             asset=asset,
             preview_exists=preview_exists,
+            preview_attention=preview_attention,
             attention=attention,
             provenance=provenance,
             generation_method=(
@@ -285,7 +296,7 @@ class LoadTodaysWork:
         brief: WeeklyMarketingBrief | None,
         package: ContentPackage | None,
         asset: AssetSummary | None,
-        preview_exists: bool,
+        preview_attention: str,
     ) -> tuple[str, ...]:
         items: list[str] = []
         if brief is None:
@@ -305,8 +316,5 @@ class LoadTodaysWork:
             items.append("Review Casey's content package.")
         if asset is None or asset.availability != "available":
             items.append("The approved campaign cover is unavailable.")
-        if not preview_exists:
-            items.append("The local campaign preview has not been generated.")
-        if not items:
-            items.append("Review the local campaign preview; nothing has been published.")
+        items.append(preview_attention)
         return tuple(items)
