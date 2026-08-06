@@ -1177,7 +1177,17 @@ class LocalWorkspaceApp:
             ),
             "X-Frame-Options": "DENY",
             "X-Content-Type-Options": "nosniff",
-            "Referrer-Policy": "no-referrer",
+            # "same-origin", not "no-referrer": Chrome computes the Origin header for
+            # form-navigation POSTs from the referrer policy in effect, and under
+            # "no-referrer" it sends the literal string "null" even for genuinely
+            # same-origin submissions -- which the Origin check below then correctly
+            # rejects as forged. "same-origin" preserves the same privacy guarantee
+            # (the referrer is still never sent to the one external link this app has,
+            # the Amazon URL) while letting real-browser same-origin POSTs compute
+            # correctly. Loosening the Origin check to accept "null" instead would
+            # reopen the exact cross-origin/sandboxed-iframe CSRF vector it exists to
+            # block, since forged requests also send "null".
+            "Referrer-Policy": "same-origin",
         }
         headers.update(extra or {})
         return headers

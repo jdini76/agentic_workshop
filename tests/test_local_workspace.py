@@ -262,7 +262,9 @@ def test_home_brief_escaping_headers_and_get_requests_are_read_only(tmp_path: Pa
         assert "unsafe-inline" not in policy
         assert response.headers["X-Frame-Options"] == "DENY"
         assert response.headers["X-Content-Type-Options"] == "nosniff"
-        assert response.headers["Referrer-Policy"] == "no-referrer"
+        # "same-origin", not "no-referrer": under no-referrer, Chrome sends Origin: null
+        # on same-origin form POSTs, which the CSRF Origin check then (correctly) rejects.
+        assert response.headers["Referrer-Policy"] == "same-origin"
         assert response.headers["Cache-Control"] == "no-store"
 
 
