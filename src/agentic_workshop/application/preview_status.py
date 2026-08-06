@@ -319,12 +319,12 @@ class GenerateVerifiedCampaignPreview:
             if backup.exists():
                 shutil.rmtree(backup)
             if destination.exists():
-                os.replace(destination, backup)
+                shutil.move(str(destination), str(backup))
             try:
-                os.replace(staged, destination)
+                shutil.move(str(staged), str(destination))
             except Exception:
                 if backup.exists():
-                    os.replace(backup, destination)
+                    shutil.move(str(backup), str(destination))
                 raise
             if backup.exists():
                 shutil.rmtree(backup)

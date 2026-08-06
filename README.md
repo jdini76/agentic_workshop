@@ -15,12 +15,28 @@ See [the architecture guide](docs/architecture.md) and [implementation roadmap](
 
 - Python 3.13 or newer
 
-Install the package in an isolated environment:
+### 1. Create and activate a virtual environment
 
 ```shell
 python -m venv .venv
-# Windows PowerShell: .venv\Scripts\Activate.ps1
-# POSIX shells: source .venv/bin/activate
+```
+
+**Activate the virtual environment:**
+
+- **Windows PowerShell:**
+
+  ```shell
+  .venv\Scripts\Activate.ps1
+  ```
+
+- **POSIX shells (Linux/macOS):**
+  ```shell
+  source .venv/bin/activate
+  ```
+
+### 2. Install the package
+
+```shell
 python -m pip install -e .
 ```
 
