@@ -219,10 +219,13 @@ The command prints the exact local URL, normally `http://127.0.0.1:8765/`. Open 
 browser and press `Ctrl+C` in the terminal to stop it. The server binds only to the literal IPv4
 loopback address and does not open a browser automatically.
 
-This first interactive slice displays Today's Work and Sarah's complete weekly brief. It can approve
-Sarah's brief or record required revision instructions after a deliberate confirmation. It cannot
-run Casey, call a model, generate or serve previews, publish, upload, post, send, or contact an
-external destination. The static `todays-work` command remains available.
+The workspace displays Today's Work, campaign history across every known week, and lets you start a
+new campaign, review and approve or request revisions for Sarah's brief and Casey's content
+package, generate Casey's deterministic draft, and generate or regenerate the local campaign
+preview — all after a deliberate confirmation. Starting a new campaign accepts any day within the
+target week, normalizes it to that week's Monday, and refuses to create a duplicate week. It cannot
+call a paid model, publish, upload, post, send, or contact an external destination. The static
+`todays-work` command remains available.
 
 While the workspace server is running, treat it as the sole workflow writer. It protects every
 mutation with artifact identity and checksum verification, reloads immediately before mutation, and

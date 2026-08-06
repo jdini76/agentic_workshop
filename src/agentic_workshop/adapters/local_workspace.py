@@ -18,7 +18,10 @@ from urllib.parse import parse_qs, urlsplit
 
 from pydantic import ValidationError
 
-from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
+from agentic_workshop.adapters.filesystem_resources import (
+    FilesystemResourceLoader,
+    ResourceLoadingError,
+)
 from agentic_workshop.application.brief_review import (
     BriefArtifactConflictError,
     BriefArtifactIdentityError,
@@ -54,6 +57,12 @@ from agentic_workshop.application.deterministic_content import (
     GenerateDeterministicContentPackage,
     combined_generation_checksum,
 )
+from agentic_workshop.application.marketing import MarketingBriefError
+from agentic_workshop.application.next_campaign import (
+    DuplicateCampaignWeekError,
+    NextCampaignWorkflowError,
+    StartNextCampaign,
+)
 from agentic_workshop.application.preview import CampaignPreviewError
 from agentic_workshop.application.preview_status import (
     MANIFEST_RESOURCE_TEMPLATE,
@@ -71,6 +80,7 @@ from agentic_workshop.presentation.workspace import (
     render_brief,
     render_confirmation,
     render_generation_confirmation,
+    render_new_campaign_form,
     render_package,
     render_package_confirmation,
     render_preview_confirmation,
@@ -187,6 +197,48 @@ class WorkspaceSecurity:
         self._used_nonces.add(token)
         return True
 
+    def new_campaign_nonce(self, client_id: ClientId) -> str:
+        """Confirmation for creating a campaign that does not exist yet.
+
+        There is no prior artifact to bind a checksum to, so this is bound only to the action
+        and client identity, plus the same expiry and single-use protection as other nonces.
+        """
+        payload = json.dumps(
+            {
+                "action": "campaign-new",
+                "client_id": str(client_id),
+                "expires": int(time.time()) + 600,
+                "random": secrets.token_urlsafe(18),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+        signature = hmac.new(self._secret, encoded.encode(), hashlib.sha256).hexdigest()
+        return f"{encoded}.{signature}"
+
+    def consume_new_campaign_nonce(self, token: str, *, client_id: str) -> bool:
+        if token in self._used_nonces:
+            return False
+        try:
+            encoded, signature = token.split(".", maxsplit=1)
+            expected = hmac.new(self._secret, encoded.encode(), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                return False
+            padding = "=" * (-len(encoded) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(encoded + padding))
+            valid = (
+                payload["action"] == "campaign-new"
+                and payload["client_id"] == client_id
+                and int(payload["expires"]) >= int(time.time())
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not valid:
+            return False
+        self._used_nonces.add(token)
+        return True
+
 
 class LocalWorkspaceApp:
     """Route local HTML requests to existing application services."""
@@ -213,6 +265,7 @@ class LocalWorkspaceApp:
         self._history = LoadCampaignHistory(
             config.repository_root, self._loader, config.client_id
         )
+        self._next_campaign = StartNextCampaign(config.repository_root, self._loader)
         self._stylesheet_path = config.resource_root / "static" / "workspace.css"
         self._preview_stylesheet_path = config.resource_root / "static" / "preview.css"
 
@@ -271,9 +324,12 @@ class LocalWorkspaceApp:
         try:
             if path == "/" or path.startswith("/campaign/") or path.startswith("/brief"):
                 selected, page = self._campaign_route(path)
+                if page == "new-campaign":
+                    return self._get_new_campaign_page(session, cookie_header)
                 campaigns = asyncio.run(self._history.execute())
                 campaign = self._select_campaign(campaigns, selected)
                 messages = {
+                    "campaign-started": "Sarah drafted a new weekly brief for this campaign.",
                     "brief-approved": "Sarah's brief was approved.",
                     "brief-revision-requested": "Revision instructions were recorded for Sarah.",
                     "package-approved": "Casey's package was approved.",
@@ -466,6 +522,26 @@ class LocalWorkspaceApp:
                 cookie_header,
             )
 
+    def _get_new_campaign_page(
+        self, session: str, cookie_header: str | None
+    ) -> WorkspaceResponse:
+        try:
+            campaigns = asyncio.run(self._history.execute())
+            existing_weeks = tuple(sorted(view.record.week for view in campaigns))
+        except CampaignNotFoundError:
+            existing_weeks = ()
+        nonce = self._security.new_campaign_nonce(self._config.client_id)
+        return self._html(
+            HTTPStatus.OK,
+            render_new_campaign_form(
+                client_id=str(self._config.client_id),
+                existing_weeks=existing_weeks,
+                csrf_token=self._security.csrf_token(session),
+                confirmation_nonce=nonce,
+            ),
+            cookie_header,
+        )
+
     def _post(self, path: str, request: WorkspaceRequest) -> WorkspaceResponse:
         if request.headers.get("Origin") != self._config.origin:
             return self._route_error(path, HTTPStatus.FORBIDDEN, "Invalid request origin.")
@@ -490,6 +566,8 @@ class LocalWorkspaceApp:
                 HTTPStatus.FORBIDDEN,
                 "The CSRF token is missing or invalid.",
             )
+        if path == "/campaign/new":
+            return self._post_new_campaign(form)
         try:
             selected, workflow, action = self._post_campaign_route(path)
             campaigns = asyncio.run(self._history.execute())
@@ -601,6 +679,100 @@ class LocalWorkspaceApp:
             status=HTTPStatus.SEE_OTHER,
             body=b"",
             headers=self._headers({"Location": location}),
+        )
+
+    def _post_new_campaign(self, form: dict[str, list[str]]) -> WorkspaceResponse:
+        client_id = self._single(form, "client_id") or ""
+        nonce = self._single(form, "confirmation_nonce") or ""
+        if not self._security.consume_new_campaign_nonce(nonce, client_id=client_id):
+            return self._new_campaign_error(
+                HTTPStatus.FORBIDDEN,
+                "The confirmation is missing, invalid, expired, or already used.",
+            )
+        if client_id != str(self._config.client_id):
+            return self._new_campaign_error(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "The confirmed client does not match the configured workspace client.",
+            )
+        week_value = self._single(form, "week") or ""
+        try:
+            requested_week = parse_campaign_week(week_value)
+        except CampaignNotFoundError as error:
+            return self._new_campaign_error(HTTPStatus.BAD_REQUEST, str(error))
+        try:
+            started = asyncio.run(
+                self._next_campaign.execute(
+                    client_id=self._config.client_id,
+                    requested_week=requested_week,
+                )
+            )
+        except DuplicateCampaignWeekError as error:
+            return self._new_campaign_error(
+                HTTPStatus.CONFLICT, str(error), existing_week=error.week
+            )
+        except (
+            NextCampaignWorkflowError,
+            MarketingBriefError,
+            ResourceLoadingError,
+            OSError,
+            ValidationError,
+            ValueError,
+        ) as error:
+            return self._new_campaign_error(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
+        return WorkspaceResponse(
+            status=HTTPStatus.SEE_OTHER,
+            body=b"",
+            headers=self._headers(
+                {
+                    "Location": (
+                        f"/campaign/{started.brief.week.isoformat()}?result=campaign-started"
+                    )
+                }
+            ),
+        )
+
+    def _new_campaign_error(
+        self,
+        status: int,
+        internal_message: str,
+        *,
+        existing_week: date | None = None,
+    ) -> WorkspaceResponse:
+        del internal_message
+        conflict_message = (
+            f"A campaign for {existing_week.isoformat()} already exists."
+            if existing_week is not None
+            else "A campaign for that week already exists."
+        )
+        safe_messages = {
+            HTTPStatus.BAD_REQUEST: "Enter the campaign week as a valid date.",
+            HTTPStatus.FORBIDDEN: "The new-campaign request could not be verified.",
+            HTTPStatus.CONFLICT: conflict_message,
+            HTTPStatus.UNPROCESSABLE_ENTITY: (
+                "Sarah could not draft that campaign yet. Review the client profile."
+            ),
+        }
+        message = safe_messages.get(
+            HTTPStatus(status), "The new campaign could not be started."
+        )
+        return_path = (
+            f"/campaign/{existing_week.isoformat()}"
+            if existing_week is not None
+            else "/campaign/new"
+        )
+        return_label = (
+            f"Open the {existing_week.isoformat()} campaign"
+            if existing_week is not None
+            else "Return to start a new campaign"
+        )
+        return self._html(
+            status,
+            render_workspace_error(
+                "Campaign can't be started yet",
+                message,
+                return_path=return_path,
+                return_label=return_label,
+            ),
         )
 
     def _post_generation(
@@ -975,6 +1147,8 @@ class LocalWorkspaceApp:
     def _campaign_route(path: str) -> tuple[date | None, str]:
         if path == "/":
             return None, "home"
+        if path == "/campaign/new":
+            return None, "new-campaign"
         legacy = {
             "/brief": "brief",
             "/brief/approve/confirm": "approve-confirm",

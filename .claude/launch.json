@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "agentic-workshop-workspace",
+      "runtimeExecutable": ".venv/Scripts/agentic-workshop.exe",
+      "runtimeArgs": ["workspace", "--port", "8880"],
+      "port": 8880
+    }
+  ]
+}

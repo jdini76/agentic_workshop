@@ -1,0 +1,163 @@
+# Agentic Workshop — Status Log
+
+## 2026-08-06 (later) — Claude Code session — "start next campaign" implemented
+
+Built the last remaining Phase 1 gap: `GET`/`POST /campaign/new` in the workspace, backed by a new
+`StartNextCampaign` application service. Accepts any day within a week, normalizes to that week's
+Monday, rejects duplicate weeks (409 + link to the existing campaign). Verified live against the
+real repo: week `2026-08-21` correctly normalized to and created `2026-08-17`; resubmitting
+`2026-08-03` correctly rejected as a duplicate. Verification artifacts cleaned up afterward — only
+the real Aug 3 / Aug 10 campaigns remain.
+
+**Phase 1 (finish the weekly campaign workflow) is now fully complete** — the entire loop (start →
+Sarah approve/revise → Casey generate/approve/revise → preview generate) is operable from the
+browser with zero CLI commands needed.
+
+8 new tests added (`tests/test_next_campaign_workspace.py`). Full suite, ruff, and mypy --strict
+all clean. **Not committed yet** — changes are local only, pending review.
+
+**Scope decision, not a bug**: "give Sarah an optional direction" from the original request was
+deliberately left out. The deterministic brief generator has no hook for freeform steering — it
+alternates between two fully hardcoded campaign directions by week parity. Wiring in real direction
+support is a content-generation change, not workflow plumbing; didn't want to add an input field
+that would silently do nothing. Full detail in `docs/marketing-workflow-status.md`.
+
+**Suggested next step**: manual publication records (Phase 3, item 9) — the smallest piece needed
+before running real campaigns produces anything learnable.
+
+### Real-browser bug found and fixed the same day
+
+The user manually clicked "Generate Sarah's draft" in real Chrome and hit `403 Invalid request
+origin` — reproducible, not a fluke. Root cause, confirmed with a temporary diagnostic log: Chrome
+sends the literal `Origin: null` on same-origin form POSTs when the page's `Referrer-Policy` is
+`no-referrer`, which every page in this workspace was setting. The Origin equality check then
+(correctly) rejected it as indistinguishable from a forged cross-origin request.
+
+**Fix**: changed `Referrer-Policy` from `no-referrer` to `same-origin` in `local_workspace.py`'s
+shared `_headers()` — same privacy guarantee (referrer still never leaves the origin, including to
+the one external Amazon link), but Chrome computes a real same-origin `Origin` header correctly.
+Did **not** loosen the Origin check itself to accept `"null"` — that would reopen the exact
+cross-origin/sandboxed-iframe CSRF hole the check exists to close, since forged requests send the
+same literal value. Added a regression test proving a forged `Origin: null` POST is still rejected
+after the fix. User re-tested in real Chrome after the fix and confirmed it works.
+
+**This likely affected every write action in the workspace, not just the new one** — approve,
+revision, Casey generation, preview generation all share the same `_post()` Origin check and the
+same global headers. It's plausible this was silently blocking real end-user clicks the whole time
+and was only ever exercised successfully via curl or automated browser tooling that doesn't
+replicate this specific Chrome/Referrer-Policy interaction. Worth keeping in mind: **prior "visually
+verified in browser" claims in this project's history were mostly Codex's own automated in-app
+browser tool, not a human clicking in a real desktop browser** — this is the first confirmed real
+end-user click-through of a workspace mutation, and it found something the automation missed.
+
+
+
+## 2026-08-06 — Claude Code session — full ChatGPT/Codex history received
+
+The complete raw ChatGPT/Codex conversation for this project (repo review → vertical slice →
+client onboarding → OpenAI integration → asset pipeline → interactive workspace → preview
+lifecycle) was pasted in and reconciled. Nothing it described conflicted with what's already
+verified in this log — it's the origin story for everything above. Two operationally important
+facts:
+
+- **ChatGPT/Codex is usage-limited until 2026-08-08 5:10 PM** — that's why Claude is doing this
+  work right now, not a permanent switch. Keep updating this file either way.
+- The acceptance test ChatGPT's last message asked for (regenerate the Aug 10 preview, verify it
+  goes `unverified → current`, Aug 3 stays `unverified`) was already completed by Claude earlier
+  the same day — see the "2026-08-05 (later)" entry below. No need to repeat it.
+
+New reference docs added: [`docs/roi-framework.md`](docs/roi-framework.md) (Morgan's future
+measurement methodology) and an expanded backlog section in
+[`docs/marketing-workflow-status.md`](docs/marketing-workflow-status.md) covering community/feedback
+loop roles, the Demo Producer concept, three-tier publishing safeguards, and the explicit
+product-agnosticism acceptance test (onboard Theater Rehearsal Web App as client #2 without
+touching the core engine — deliberately not attempted until Phase 1 here is complete).
+
+No code changed this entry — documentation and reconciliation only.
+
+## North star (from ChatGPT, reconciled 2026-08-06 — consistent with the phase roadmap below, not a change of direction)
+
+1. Finish the local Sarah → Casey → preview workflow.
+2. Add manual publication records.
+3. Use that process for several real campaigns.
+4. Identify which destinations you repeatedly use.
+5. Build the first assisted or direct adapter for the most repetitive destination.
+6. Keep manual publishing available as a fallback.
+
+Steps 1–2 = Phase 1 + Phase 3 item 9 below. Steps 3–6 = Phase 5's "don't automate distribution
+until repeated manual use tells you which destination is worth it" made concrete. Don't build a
+publishing adapter speculatively — wait for the evidence from step 3–4.
+
+**Read this file first in any new session (Claude or ChatGPT) before doing project work.**
+Keep entries short. Newest first. Update at the end of any session that changes status or makes a
+decision — whichever assistant you're using that day.
+
+---
+
+## 2026-08-05 (later) — Claude Code session — acceptance test executed
+
+Ran the exact acceptance test ChatGPT specified (regenerate the legacy Aug 10 campaign preview
+through the workspace UI) — actually executed it against a live local server, not just described
+it. **All criteria passed:**
+
+- Aug 10 preview status: `unverified` → `current`.
+- "View campaign preview" became available; preview HTML confirmed served (`/campaign/2026-08-10/preview`, HTTP 200).
+- Preview page title: "Local campaign preview — not published"; body explicitly states "This local
+  artifact has no publish, upload, post, send, or external-delivery action." Nothing was published
+  or transmitted anywhere.
+- Website/social copy in the preview matches Casey's approved package ("When Trust Takes Time" /
+  "Trust can grow through patience, kindness, and time").
+- Approved cover image (`jordan-and-the-fosters-front-cover-marketing-1600h.v1.png`) is referenced
+  correctly in both the website and social sections of the preview.
+- Aug 3 campaign untouched, still `unverified` — regeneration correctly scoped to Aug 10 only.
+- Attention queue updated from "Regenerate the legacy campaign preview…" to "Review the current
+  local campaign preview; nothing has been published."
+
+**Tooling note, not a product bug:** the first two attempts, driven through the automated Browser
+pane (a click-through UI test), failed with "The preview request could not be verified" (HTTP 403).
+Root cause was **not** the app — replicating the identical request with `curl` (explicit `Origin`
+header, session cookie, and all hidden form fields) succeeded immediately (303 → success). The
+embedded browser tool isn't sending a matching `Origin` header on this same-origin POST, which the
+app correctly rejects per its CSRF/origin-check design (`local_workspace.py` line ~470). Worth
+knowing if browser-driven UI testing of this app is attempted again in this environment — a raw
+HTTP client (curl/requests) is currently the reliable way to exercise write routes end to end here.
+
+**Fixed (commit `618cf35`):** `.pytest_tmp/` (228 files, accidentally committed in `9caefef`) is now
+untracked and gitignored. Local temp files left in place, only git tracking changed — no history
+rewrite, no force-push needed. Tests re-run clean afterward.
+
+## 2026-08-05 — Claude Code session
+
+**What's actually done (verified against source, not just commit messages):**
+- Full Sarah → CEO-approve → Casey → CEO-approve → preview chain works end to end via the local
+  workspace (`agentic-workshop workspace`), not just the CLI.
+- Casey review controls, deterministic Casey generation, and campaign-preview generation are all
+  implemented (commits `b941b03`, `141a797`, `ef3103f` — `ef3103f` is current HEAD).
+- Preview freshness is checksum-bound (`combined_generation_checksum`), not folder-existence-based —
+  already ahead of where the last ChatGPT status update believed things were.
+- Approved client asset pipeline (checksum-verified manifest, metadata-clean derivative for
+  *Jordan and the Fosters*' cover) is in place.
+- Optional OpenAI-backed generation exists behind `--generator openai --confirm-paid-call`;
+  deterministic generation remains the default. One live baseline evaluated and approved
+  (not published) — see `docs/evaluations/model-backed-baseline-2026-08-03.md`.
+
+**Confirmed gap:** no "start next campaign" route in the workspace UI. New campaign weeks can only
+be started from the CLI (`agentic-workshop brief <client> --week-of <date>`), never from the
+browser. This is the one piece separating "operate mostly from the browser" from "operate fully
+from the browser."
+
+**Recommended next step:** build the "start next campaign" workspace route (choose client, choose
+week, optional direction for Sarah, generate the draft, prevent duplicate weeks). See
+`docs/marketing-workflow-status.md` for the full phase roadmap and reasoning.
+
+**Not yet touched this session:** Phase 2 (attention queue, campaign history polish), Phase 3
+(manual publication/analytics records, "Morgan" the performance analyst), Phase 4 (model-assisted
+revision, "Riley" research support), Phase 5 (distribution).
+
+**Scope note:** `household-brain-mcp` (a separate Gmail/Calendar household-automation MCP server,
+at `C:\Users\joe\Claude\Projects\Household Assistant`) is **not** part of Agentic Workshop — an
+earlier ChatGPT handoff conflated the two projects; corrected 2026-08-05.
+
+---
+
+*(Add new entries above this line, newest first. Full detail lives in `docs/marketing-workflow-status.md` and `docs/roadmap.md` — this file is the fast-scan summary for picking the project back up.)*

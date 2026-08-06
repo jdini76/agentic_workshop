@@ -85,6 +85,7 @@ def render_workspace_home(
           <table><thead><tr><th>Week</th><th>Theme</th><th>Sarah</th><th>Casey</th>
           <th>Generation</th><th>Cover</th><th>Preview</th></tr></thead>
           <tbody>{campaign_rows}</tbody></table>
+          <p><a class="button secondary" href="/campaign/new">Start next campaign</a></p>
         </section>
         <section><h2>What needs your attention</h2><ul>{attention}</ul></section>
         <section><h2>Sarah's weekly brief</h2>
@@ -216,6 +217,41 @@ def render_confirmation(
           {textarea}
           <button type="submit">{html.escape(title)}</button>
         </form>""",
+    )
+
+
+def render_new_campaign_form(
+    *,
+    client_id: str,
+    existing_weeks: tuple[date, ...],
+    csrf_token: str,
+    confirmation_nonce: str,
+) -> str:
+    existing = (
+        "".join(
+            f'<li><a href="/campaign/{week.isoformat()}">{html.escape(week.isoformat())}</a></li>'
+            for week in existing_weeks
+        )
+        or "<li>None yet.</li>"
+    )
+    return _page(
+        "Start next campaign",
+        f"""<p class="local">Local workspace — nothing is published.</p>
+        <p><a href="/">← Today's Work</a></p>
+        <h1>Start next campaign</h1>
+        <p>Choose a campaign week for <strong>{html.escape(client_id)}</strong>. Any day within
+        the week works; it is normalized to that week's Monday. Sarah drafts a new brief as a
+        <code>draft</code> — nothing is published.</p>
+        <form method="post" action="/campaign/new">
+          <input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}">
+          <input type="hidden" name="confirmation_nonce"
+                 value="{html.escape(confirmation_nonce, quote=True)}">
+          <input type="hidden" name="client_id" value="{html.escape(client_id, quote=True)}">
+          <label for="week">Campaign week</label>
+          <input type="date" id="week" name="week" required>
+          <button type="submit">Generate Sarah's draft</button>
+        </form>
+        <details><summary>Existing campaign weeks</summary><ul>{existing}</ul></details>""",
     )
 
 
