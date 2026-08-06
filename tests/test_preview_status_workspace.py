@@ -8,8 +8,6 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
-from tests.test_campaign_preview import preview_inputs
-from tests.test_local_workspace import CLIENT_ID, RESOURCES, get, local_config
 
 from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
 from agentic_workshop.adapters.local_workspace import (
@@ -31,6 +29,8 @@ from agentic_workshop.application.preview_status import (
 from agentic_workshop.domain.assets import ClientAssetManifest
 from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.marketing import BriefApprovalState
+from tests.test_campaign_preview import preview_inputs
+from tests.test_local_workspace import CLIENT_ID, RESOURCES, get, local_config
 
 EXPECTED_PREVIEW_GUIDANCE = {
     "missing": (
@@ -258,6 +258,10 @@ def test_workspace_serves_only_current_preview_and_recorded_asset(tmp_path: Path
     app = LocalWorkspaceApp(config, security=WorkspaceSecurity(b"preview-serving"))
     home = get(app, config, "/campaign/2026-08-03").body.decode()
     assert "View campaign preview" in home
+    # The trailing slash is load-bearing, not cosmetic: the preview page's own relative
+    # asset paths ("assets/...") only resolve correctly in a browser when the address bar
+    # shows a directory-style URL. Without it, every image in the preview 404s.
+    assert 'href="/campaign/2026-08-03/preview/"' in home
     preview = get(app, config, "/campaign/2026-08-03/preview")
     assert preview.status == 200
     assert preview.headers["Content-Type"] == "text/html; charset=utf-8"

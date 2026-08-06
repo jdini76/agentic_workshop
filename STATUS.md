@@ -25,6 +25,35 @@ that would silently do nothing. Full detail in `docs/marketing-workflow-status.m
 **Suggested next step**: manual publication records (Phase 3, item 9) — the smallest piece needed
 before running real campaigns produces anything learnable.
 
+### Second real-browser bug found and fixed the same day: preview images 404
+
+User continued reviewing the workspace and reported the Aug 10 preview's cover image missing when
+opened via "View campaign preview." Root cause: the preview page's own HTML uses a relative image
+path (`assets/cover.png`) written for the case where the file sits on disk next to its own
+`assets/` folder (the standalone `campaign-preview` CLI output). The workspace's "View campaign
+preview" link pointed at `/campaign/<week>/preview` with **no trailing slash**, so the browser
+resolved that relative path one directory level too shallow
+(`/campaign/<week>/assets/...` — 404) instead of the actually-registered
+`/campaign/<week>/preview/assets/...` (200). Same root-cause *category* as the Referrer-Policy bug
+earlier today: something only a real browser doing real relative-URL resolution would surface — not
+curl (which was given exact absolute paths in every check I ran) and not caught by any existing
+test (which also only ever checked exact absolute paths).
+
+**Fix**: added the trailing slash to the one link that pointed at the preview
+(`presentation/workspace.py`, "View campaign preview"). No change to routing or asset-serving
+logic — `/campaign/<week>/preview` and `/campaign/<week>/preview/` already routed identically
+server-side; only the outgoing link text was wrong. Verified end-to-end against the real Aug 10
+preview via curl (simulating exactly what the browser would request) before and after. Added a
+regression assertion checking the href includes the trailing slash. Aug 3's preview is still
+`unverified` (never regenerated) so this specific bug wasn't independently visible there yet, but
+the fix is generic and will apply once it is.
+
+**Pattern worth remembering**: this is the second bug in one day that only a real human clicking in
+a real browser found, after this feature had gone through my own automated testing, curl
+verification, and a full test suite — all passing the whole time. Automated checks proved the
+*server-side* logic was correct; they couldn't prove the *browser* would resolve URLs the way the
+HTML assumed. Real manual click-through remains worth doing even when everything else is green.
+
 ### Real-browser bug found and fixed the same day
 
 The user manually clicked "Generate Sarah's draft" in real Chrome and hit `403 Invalid request

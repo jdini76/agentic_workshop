@@ -60,8 +60,12 @@ def render_workspace_home(
         )
     preview_action = ""
     if snapshot.preview_state == "current":
+        # Trailing slash matters here: the preview page's own relative asset paths
+        # ("assets/...") are written for a directory-style URL. Without it, the browser
+        # resolves them one level too shallow (/campaign/<week>/assets/... instead of
+        # /campaign/<week>/preview/assets/...) and every image 404s.
         preview_action = (
-            f'<a class="button" href="{selected_path}/preview">'
+            f'<a class="button" href="{selected_path}/preview/">'
             "View campaign preview</a>"
         )
     elif snapshot.preview_state == "missing":
