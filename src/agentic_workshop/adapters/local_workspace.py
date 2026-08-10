@@ -73,7 +73,11 @@ from agentic_workshop.application.preview_status import (
     PreviewWorkflowError,
     asset_binding,
 )
-from agentic_workshop.application.todays_work import TodaysWorkError
+from agentic_workshop.application.publish_content_package import (
+    PublishApprovedContentPackage,
+    PublishContentPackageError,
+)
+from agentic_workshop.application.todays_work import PublicationSummary, TodaysWorkError
 from agentic_workshop.domain.assets import ClientAssetManifest
 from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.presentation.workspace import (
@@ -84,6 +88,7 @@ from agentic_workshop.presentation.workspace import (
     render_package,
     render_package_confirmation,
     render_preview_confirmation,
+    render_retry_publish_confirmation,
     render_workspace_error,
     render_workspace_home,
 )
@@ -248,6 +253,7 @@ class LocalWorkspaceApp:
         config: WorkspaceConfig,
         *,
         security: WorkspaceSecurity | None = None,
+        publish_orchestrator: PublishApprovedContentPackage | None = None,
     ) -> None:
         self._config = config
         self._security = security or WorkspaceSecurity()
@@ -266,6 +272,15 @@ class LocalWorkspaceApp:
             config.repository_root, self._loader, config.client_id
         )
         self._next_campaign = StartNextCampaign(config.repository_root, self._loader)
+        # Defaults to disabled (no publisher configured) so every existing call site that
+        # doesn't explicitly pass one -- including the whole existing test suite -- keeps
+        # today's behavior unchanged: approving a package never publishes anything.
+        self._publish_orchestrator = publish_orchestrator or PublishApprovedContentPackage(
+            config.repository_root,
+            facebook_publisher=None,
+            website_publisher=None,
+            enabled=False,
+        )
         self._stylesheet_path = config.resource_root / "static" / "workspace.css"
         self._preview_stylesheet_path = config.resource_root / "static" / "preview.css"
 
@@ -411,8 +426,14 @@ class LocalWorkspaceApp:
                                     loaded_package.package
                                 ),
                                 campaign_week=campaign.record.week,
+                                publications=campaign.snapshot.publications,
                             ),
                             cookie_header,
+                        )
+                    if page.startswith("package-publish-retry-confirm:"):
+                        platform = page.split(":", maxsplit=1)[1]
+                        return self._get_retry_publish_page(
+                            campaign, loaded_package, platform, session, cookie_header
                         )
                     action = {
                         "package-approve-confirm": "approve",
@@ -582,6 +603,9 @@ class LocalWorkspaceApp:
         if action not in {"approve", "revision"}:
             if workflow == "package" and action == "generate":
                 return self._post_generation(form, campaign)
+            if workflow == "package" and action.startswith("publish-retry-"):
+                platform = action.removeprefix("publish-retry-")
+                return self._post_retry_publish(form, campaign, platform)
             if workflow == "preview" and action == "generate":
                 return self._post_preview_generation(form, campaign)
             return self._route_error(
@@ -624,13 +648,13 @@ class LocalWorkspaceApp:
         try:
             if workflow == "package":
                 if action == "approve":
-                    self._content_review.approve(
+                    approved = self._content_review.approve(
                         campaign.record.package_path,
                         expected_checksum=checksum,
                         expected_client_id=self._config.client_id,
                         expected_week=campaign.record.week,
                     )
-                    location = f"/campaign/{week}?result=package-approved"
+                    location = self._approve_and_publish_location(week, approved)
                 else:
                     note = self._single(form, "revision_note") or ""
                     self._content_review.request_revision(
@@ -680,6 +704,127 @@ class LocalWorkspaceApp:
             body=b"",
             headers=self._headers({"Location": location}),
         )
+
+    def _approve_and_publish_location(self, week: str, approved: LoadedContentArtifact) -> str:
+        try:
+            manifest = ClientAssetManifest.model_validate_json(
+                asyncio.run(
+                    self._loader.load_text(
+                        MANIFEST_RESOURCE_TEMPLATE.format(client_id=self._config.client_id)
+                    )
+                )
+            )
+            asyncio.run(
+                self._publish_orchestrator.execute(
+                    package=approved.package,
+                    package_checksum=approved.checksum,
+                    manifest=manifest,
+                )
+            )
+        except PublishContentPackageError:
+            pass
+        # Each destination's actual outcome (published/failed/skipped) is shown in its own
+        # section on the campaign page and in the attention list -- the redirect itself no
+        # longer tries to summarize two independent results into one result code.
+        return f"/campaign/{week}?result=package-approved"
+
+    def _get_retry_publish_page(
+        self,
+        campaign: CampaignView,
+        loaded_package: LoadedContentArtifact,
+        platform: str,
+        session: str,
+        cookie_header: str | None,
+    ) -> WorkspaceResponse:
+        publication = self._publication_for_platform(campaign, platform)
+        if publication is None or publication.state != "failed":
+            return self._error(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "Only a failed publish attempt can be retried.",
+            )
+        nonce = self._security.confirmation_nonce(
+            action=f"publish-retry-{platform}",
+            client_id=loaded_package.package.client_id,
+            week=loaded_package.package.week,
+            checksum=loaded_package.checksum,
+            artifact_identity=loaded_package.package.package_id,
+        )
+        return self._html(
+            HTTPStatus.OK,
+            render_retry_publish_confirmation(
+                campaign_week=campaign.record.week,
+                client_id=str(self._config.client_id),
+                package_id=loaded_package.package.package_id,
+                package_checksum=loaded_package.checksum,
+                platform=platform,
+                error_detail=publication.label,
+                csrf_token=self._security.csrf_token(session),
+                confirmation_nonce=nonce,
+            ),
+            cookie_header,
+        )
+
+    def _post_retry_publish(
+        self, form: dict[str, list[str]], campaign: CampaignView, platform: str
+    ) -> WorkspaceResponse:
+        if campaign.record.package is None:
+            return self._error(
+                HTTPStatus.NOT_FOUND, "Casey's content package is missing for this campaign."
+            )
+        package_id = self._single(form, "package_id") or ""
+        checksum = self._single(form, "package_checksum") or ""
+        client_id = self._single(form, "client_id") or ""
+        week = self._single(form, "week") or ""
+        nonce = self._single(form, "confirmation_nonce") or ""
+        if not self._security.consume_confirmation(
+            nonce,
+            action=f"publish-retry-{platform}",
+            client_id=client_id,
+            week=week,
+            checksum=checksum,
+            artifact_identity=package_id,
+        ):
+            return self._error(
+                HTTPStatus.FORBIDDEN,
+                "The confirmation is missing, invalid, expired, or already used.",
+            )
+        if client_id != str(self._config.client_id) or week != campaign.record.week.isoformat():
+            return self._error(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "The confirmed artifact does not match the current campaign.",
+            )
+        loaded_package = self._content_review.load(campaign.record.package_path)
+        if (
+            loaded_package.checksum != checksum
+            or loaded_package.package.package_id != package_id
+        ):
+            return self._error(
+                HTTPStatus.CONFLICT,
+                "Casey's package changed after confirmation. Reload and try again.",
+            )
+        publication = self._publication_for_platform(campaign, platform)
+        if publication is None or publication.state != "failed":
+            return self._error(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "Only a failed publish attempt can be retried.",
+            )
+        location = self._approve_and_publish_location(week, loaded_package)
+        return WorkspaceResponse(
+            status=HTTPStatus.SEE_OTHER,
+            body=b"",
+            headers=self._headers({"Location": location}),
+        )
+
+    @staticmethod
+    def _publication_for_platform(
+        campaign: CampaignView, platform: str
+    ) -> PublicationSummary | None:
+        matches = [
+            publication
+            for publication in campaign.snapshot.publications
+            if publication.platform == platform
+        ]
+        return matches[0] if matches else None
 
     def _post_new_campaign(self, form: dict[str, list[str]]) -> WorkspaceResponse:
         client_id = self._single(form, "client_id") or ""
@@ -1170,6 +1315,16 @@ class LocalWorkspaceApp:
             ("package", "approve", "confirm"): "package-approve-confirm",
             ("package", "revision", "confirm"): "package-revision-confirm",
             ("package", "generate", "confirm"): "package-generate-confirm",
+            (
+                "package",
+                "publish-retry-facebook_page",
+                "confirm",
+            ): "package-publish-retry-confirm:facebook_page",
+            (
+                "package",
+                "publish-retry-website",
+                "confirm",
+            ): "package-publish-retry-confirm:website",
             ("preview",): "preview",
             ("preview", "generate", "confirm"): "preview-generate-confirm",
         }
@@ -1405,9 +1560,15 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
         del format, args
 
 
-def serve_workspace(config: WorkspaceConfig) -> None:
+def serve_workspace(
+    config: WorkspaceConfig,
+    *,
+    publish_orchestrator: PublishApprovedContentPackage | None = None,
+) -> None:
     """Serve the workspace on the fixed literal IPv4 loopback address."""
-    WorkspaceRequestHandler.app = LocalWorkspaceApp(config)
+    WorkspaceRequestHandler.app = LocalWorkspaceApp(
+        config, publish_orchestrator=publish_orchestrator
+    )
     server = ThreadingHTTPServer((WORKSPACE_HOST, config.port), WorkspaceRequestHandler)
     print(f"Agentic Workshop is available at {config.origin}/")
     print("Press Ctrl+C to stop the local workspace.")

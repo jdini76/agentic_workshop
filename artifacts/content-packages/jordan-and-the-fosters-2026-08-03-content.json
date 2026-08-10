@@ -107,7 +107,7 @@
     }
   ],
   "assumptions": [
-    "This package is a draft and will not be published automatically.",
+    "This package is a draft and has not been published.",
     "Only client_profile.approved_facts are available as factual claims."
   ],
   "missing_assets_or_information": [

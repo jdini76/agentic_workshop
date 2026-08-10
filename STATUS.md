@@ -1,5 +1,160 @@
 # Agentic Workshop — Status Log
 
+## 2026-08-06 (latest) — Claude Code session — SSL fixed, site rebuild approved, website auto-publish implemented
+
+**Two things happened this session, in order: a real production outage got found and fixed, then a
+second major feature (website auto-publish, Phase 2 of autonomous publishing) got built on top of
+that discovery.**
+
+### The SSL certificate had been expired for about a year
+
+While investigating the site for the website-publishing work below, `jordanandthefosters.fun`
+turned out to be completely unreachable in a real browser — its SSL certificate expired
+2025-08-12, roughly a year ago. Every real visitor was hitting a hard "connection not private"
+interstitial, not a soft warning. This was **found and fixed this session**, independent of
+anything else: a new Sectigo multi-domain SAN certificate now covers `jordanandthefosters.fun`,
+`rehearselines.com`, and `joeschmoepublishing.com` (confirmed via direct TLS handshake, not just
+"cPanel says installed"). One gap remains open: the cert doesn't include `www.` as a SAN, so
+`https://www.jordanandthefosters.fun` still fails — you have a Namecheap support ticket open for
+this; the apex `https://jordanandthefosters.fun` (no `www`) works correctly in the meantime.
+
+### The site is getting rebuilt as a plain, git-managed static site
+
+Investigating the site also surfaced that it's built with a proprietary drag-and-drop "Website
+Builder" bundled with the host, not hand-editable files — meaning autonomous publishing can't just
+write into `public_html`. You reviewed this tradeoff and explicitly approved converting it: backed
+up the full cPanel account first, accepted the risk given low traffic. This session's Phase 2 work
+below is the mechanism for that conversion and its ongoing autonomous updates.
+
+### Website auto-publish (Phase 2) — implemented, same governance rules as Facebook
+
+Approving Casey's content package now attempts to publish to **both** Facebook and the website,
+independently — one destination's failure or missing configuration never blocks the other, and
+each gets its own `PublicationRecord` and its own "Retry publish" action. Same rules you set for
+Facebook apply here: approval is the publish trigger (no separate confirmation), and each week's
+approved website draft **replaces** the homepage's current pitch copy rather than accumulating as a
+feed — you confirmed both of these explicitly this session.
+
+**How it publishes, mechanically:** `WebsitePublisher` renders the homepage locally, commits it to
+a git working copy, and pushes to a GitHub repository — the site's new real source of truth — over
+HTTPS with a token (no SSH needed). It then calls cPanel's own **Git™ Version Control** feature via
+its UAPI (also no SSH needed — a plain HTTPS API surface) to pull and deploy that commit. Non-weekly
+content (author bio, reviews, contact links) is carried over from what's live today, verbatim,
+stored in a new resource file — not regenerated or newly sourced by Casey.
+
+**Quality gate:** full suite green (all tests pass, `ruff check .` clean, `mypy src --strict` clean
+on 64 source files, up from 61). 33 new tests across `test_website_publisher.py` (18, including
+every normalized error path and a check that the GitHub token never leaks into an error message),
+extended `test_publish_content_package.py` (independent per-destination success/fail/skip and
+idempotency), and a new `test_publish_retry_workspace.py` (3, covering the retry route's
+platform-scoped confirmation-nonce replay protection). **Not committed yet — pending your review**,
+same as the still-uncommitted Facebook work from earlier this session.
+
+### Setup required from you before any real website deploy can happen
+
+1. Create a GitHub repository for the site's source (public is the simpler default — sidesteps
+   cPanel's private-repo auth being untested; say if you'd rather go private).
+2. Generate a GitHub fine-grained PAT scoped to just that repo (`contents: write`) → `GITHUB_TOKEN`.
+3. In cPanel → **Git™ Version Control**, create a repo pointing at that GitHub clone URL. Point its
+   Pull Directory at a **throwaway staging path first** — not `public_html` — until the rendered
+   output is verified; the live site should never be touched unreviewed.
+4. Generate a cPanel API Token (Security → Manage API Tokens) → `CPANEL_API_TOKEN`.
+5. Check Security → SSH Access and tell me if it's enabled — a simpler direct-push topology exists
+   as a fallback if so, currently unused since GitHub+UAPI works either way.
+6. Do one manual "Deploy HEAD Commit" click in the cPanel UI first, to confirm this cPanel version
+   actually honors `.cpanel.yml` deployment tasks, before relying on the automated path.
+7. Add the remaining values to the repo-root `.env`: `GITHUB_REPO`, `CPANEL_USERNAME`,
+   `CPANEL_HOST`, `CPANEL_GIT_REPO_NAME` (full list and format in `docs/model-adapters.md`).
+8. Run `live-smoke-website-publish` once against the **staging** Pull Directory before trusting the
+   automated path.
+9. Add `"website_auto_publish"` to the cover asset's `approved_uses` in
+   `resources/client-assets/jordan-and-the-fosters.v1.json` when ready for image-inclusive publishes.
+10. Once staging looks right, repoint the Pull Directory at `public_html` yourself.
+11. **Honest caveat carried over from the plan, not resolved this session:** the exact cPanel UAPI
+    function names used (`VersionControlDeployment::create`/`::retrieve`) are the standard surface
+    for this feature but weren't confirmed against this account's live API — check that account's
+    self-documented `/execute/` endpoints before the first real automated deploy.
+
+## 2026-08-06 (earlier) — Claude Code session — Facebook Page auto-publish implemented
+
+**This is a deliberate scope change you asked for, not autonomous drift.** After the workflow above
+was fully click-through-verified, you said *"I don't want to do anything manually"* and, when asked
+how automated publishing should be, chose fully autonomous — then immediately clarified: *"I am not
+saying no approvals at all. Just after I agree to publish. It's pretty clear I am ok to publish."*
+Net effect: **approving Casey's content package is now itself the publish trigger for Facebook.**
+There is no second "click to publish" step. This matches a full plan you approved via plan mode
+(saved at the time as `bubbly-sauteeing-pebble.md`); implementation is complete, not partial.
+
+**What's new:** clicking "Approve Casey's package" in the workspace now also attempts one Facebook
+Page post — a photo with caption if an eligible, approved cover asset exists, otherwise a text-only
+post. This is the direct-publishing tier (3) that `docs/marketing-workflow-status.md`'s publishing
+backlog entry described as "gated on repeated manual use first" — that gate is the one you just
+explicitly lifted, for Facebook only.
+
+**Explicitly out of scope, not silently dropped** (confirmed via live investigation, not assumed):
+- **Instagram** — Meta's Graph API requires the image already hosted at a public HTTPS URL; this
+  app only ever binds to `127.0.0.1`. Blocked until a public image host exists.
+- **TikTok** — unaudited API clients are restricted to private (`SELF_ONLY`) posts until TikTok
+  runs its own audit, on a timeline nobody here controls. Not meaningfully buildable as "autonomous
+  public posting" yet regardless of code.
+- **Website** — no CMS, updated by hand via cPanel/FTP; no content API exists to automate against.
+  Needs its own separate investigation into the site's actual file layout first.
+
+**Safety net (your explicit request, default on):** publish failures never auto-retry — Facebook's
+Graph API has no idempotency key, so retrying a timed-out request risks a double-post, which is
+worse than a delayed one. A failed attempt is recorded and surfaced in "What needs your attention"
+with a plain-language reason; a **"Retry Facebook publish"** button lets you retry it deliberately
+once you've checked Facebook yourself. Re-approving identical content, or a server restart mid-post,
+can never double-post the same package to the same destination — publication records are keyed by
+package ID + content checksum + destination.
+
+**Graceful degradation if you haven't set up credentials yet:** the workspace does not fail to
+start. Every approval instead records a clear "Facebook credentials are not configured yet" skip
+until you complete the setup below.
+
+**To disable auto-publish entirely** (approvals go back to not publishing anything): set
+`AUTO_PUBLISH_ENABLED=false` in the repo-root `.env`. Default is enabled.
+
+### Setup required from you before any real post can happen
+
+Code is done and tested; these are the manual steps only you can do:
+
+1. Create a Meta for Developers **Business app** with the **Pages API** product added.
+2. Get the numeric **Page ID** for the Jordan and the Fosters Facebook Page.
+3. Generate a **Page Access Token** — a System User token via Business Manager is recommended over
+   one derived from your personal login, since the latter can be silently invalidated by your own
+   password changes.
+4. Confirm your account is admin/developer/tester on **both** the App and the Page — this avoids
+   Meta's App Review process entirely for self-managed posting (no external audit needed, unlike
+   TikTok).
+5. Add to the repo-root `.env` (never commit this file):
+   ```
+   FACEBOOK_PAGE_ID=<the page id>
+   FACEBOOK_PAGE_ACCESS_TOKEN=<the token>
+   ```
+6. Run the live smoke test once, with real credentials, before trusting the automated path:
+   ```bash
+   agentic-workshop live-smoke-facebook-publish "Testing the new publishing pipeline." \
+     --confirm-live-post --i-understand-this-posts-publicly
+   ```
+   This posts for real and visibly on the live Page — confirm the post actually appears before
+   relying on auto-publish for a real campaign.
+7. When you're ready for posts to include the cover image, add `"facebook_page_auto_publish"` to
+   the front cover derivative's `approved_uses` array in
+   `resources/client-assets/jordan-and-the-fosters.v1.json`. Until you do this, approved packages
+   still publish as text-only posts (not blocked, just no image).
+8. No automated token renewal exists yet — periodically confirm the token hasn't been silently
+   invalidated by a Meta security event.
+
+### Quality gate
+
+7 new files, 9 modified files. Full suite green: 154 tests pass (11 new: `test_facebook_publisher.py`,
+`test_publish_content_package.py`), `ruff check .` clean, `mypy src` (strict) clean on all 61 source
+files. One stale real artifact fixed along the way: `artifacts/content-packages/jordan-and-the-fosters-2026-08-03-content.json`
+(and its `.md` rendering) still carried the old "will not be published automatically" wording from
+before this feature existed — hand-edited in place rather than regenerated, since regenerating would
+have reset its real `approved` state. **Not committed yet — pending your review.**
+
 ## 2026-08-06 (later) — Claude Code session — "start next campaign" implemented
 
 Built the last remaining Phase 1 gap: `GET`/`POST /campaign/new` in the workspace, backed by a new

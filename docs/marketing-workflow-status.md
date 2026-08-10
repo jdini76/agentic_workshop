@@ -149,8 +149,19 @@ weakening the working slice.
   LLM output. Required safeguards for tier 3: exact-destination/account binding, checksum-bound
   content and asset identity, per-channel permission, explicit human publish confirmation, no silent
   retries (duplicate-post risk), idempotency keys where supported, a publication log, and no agent
-  ability to expand its own approved audience or destination list. This is a detailed refinement of
-  Phase 5, not a change to its priority — still explicitly gated on repeated manual use first.
+  ability to expand its own approved audience or destination list.
+
+  **Superseded for Facebook and the website, 2026-08-06**: the owner explicitly asked to skip ahead
+  of the "gated on repeated manual use" default — see the "Facebook Page auto-publish" and "SSL
+  fixed, site rebuild approved, website auto-publish implemented" entries in `STATUS.md` for the
+  full decision trail. `FacebookPagePublisher` and `WebsitePublisher` (tier 3, both) are
+  implemented, approval-triggered, and include every required safeguard above (checksum-bound
+  idempotent `PublicationRecord` per destination, no auto-retry, explicit human publish
+  confirmation via the package-approval click itself, per-destination asset opt-in). The website's
+  "CMS/upload-path discovery" blocker resolved to a git-based rebuild once the CEO approved
+  converting the site off its proprietary drag-and-drop builder. Instagram and TikTok adapters
+  remain unbuilt and individually blocked (public image hosting and platform audit respectively) —
+  Phase 5's original priority and manual-use gate still stands for those.
 - **GitHub Pages hosting — answered, not a backlog item**: Pages can serve static exports only
   (read-only dashboard, campaign previews, approved public pages) with an explicit human-approved
   export step; it cannot run the interactive Python workspace (approvals, generation, checksummed

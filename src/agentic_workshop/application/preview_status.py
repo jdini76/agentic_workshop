@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import Field, ValidationError
 
 from agentic_workshop.adapters.filesystem_resources import FilesystemResourceLoader
+from agentic_workshop.application.channels import channel_use
 from agentic_workshop.application.preview import GenerateCampaignPreview
 from agentic_workshop.domain.assets import AssetApprovalState, ClientAssetManifest
 from agentic_workshop.domain.base import DomainModel
@@ -210,7 +211,7 @@ class PreviewStatusService:
             if source_checksum != recorded.sha256:
                 return self._stale(directory, provenance, "An approved asset checksum changed.")
         for draft in package.drafts:
-            required_use = _channel_use(draft.channel)
+            required_use = channel_use(draft.channel)
             for recommendation in draft.asset_recommendations:
                 current = manifest_assets.get(recommendation.asset_id)
                 if current is None or required_use not in current.approved_uses:
@@ -392,17 +393,6 @@ def _provenance_assets(
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _channel_use(channel: str) -> str:
-    normalized = channel.lower()
-    if "social" in normalized:
-        return "social_posts"
-    if "email" in normalized:
-        return "email_marketing"
-    if "website" in normalized:
-        return "official_website"
-    return "campaign_package_previews"
 
 
 def _atomic_write(path: Path, content: bytes) -> None:

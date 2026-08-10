@@ -51,7 +51,13 @@ class DraftGenerationResult(DomainModel):
 
 
 class ContentPackage(DomainModel):
-    """Casey's reviewable output; package approval never authorizes publication."""
+    """Casey's reviewable output.
+
+    Package approval is a content-review decision, not a delivery guarantee: whether approval
+    also triggers external publishing is a separate, explicitly configured workflow decision
+    (see application/publish_content_package.py), and publication outcomes are tracked in their
+    own PublicationRecord, never on this model.
+    """
 
     package_id: NonBlank
     client_id: ClientId

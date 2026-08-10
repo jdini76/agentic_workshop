@@ -15,6 +15,7 @@ from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.identity import ClientId, NonBlank
 from agentic_workshop.domain.marketing import WeeklyMarketingBrief
+from agentic_workshop.domain.publication import PublicationRecord, PublicationStatus
 
 CLIENT_RESOURCE_TEMPLATE = "clients/{client_id}.v1.json"
 ASSET_MANIFEST_TEMPLATE = "client-assets/{client_id}.v1.json"
@@ -49,6 +50,13 @@ class AssetSummary(DomainModel):
     diagnostic: NonBlank
 
 
+class PublicationSummary(DomainModel):
+    platform: Literal["facebook_page", "website"]
+    state: Literal["published", "failed", "pending", "skipped"]
+    label: NonBlank
+    external_url: str | None = None
+
+
 class TodaysWorkSnapshot(DomainModel):
     """Presentation-neutral read model for one local campaign workspace."""
 
@@ -60,6 +68,7 @@ class TodaysWorkSnapshot(DomainModel):
     content_package: WorkStatus
     draft_summaries: tuple[DraftSummary, ...]
     asset: AssetSummary | None
+    publications: tuple[PublicationSummary, ...] = ()
     preview_exists: bool
     preview_state: Literal["missing", "current", "stale", "unverified", "invalid"] = (
         "missing"
@@ -93,6 +102,8 @@ class LoadTodaysWork:
         brief_path: Path,
         package_path: Path,
         preview_path: Path,
+        facebook_publication_path: Path | None = None,
+        website_publication_path: Path | None = None,
     ) -> TodaysWorkSnapshot:
         client = ClientProfile.model_validate_json(
             await self._loader.load_text(
@@ -118,7 +129,18 @@ class LoadTodaysWork:
             if preview_exists
             else "Generate the local campaign preview."
         )
-        attention = self._attention(brief, package, asset, preview_attention)
+        facebook_publication = await asyncio.to_thread(
+            self._load_publication_summary, facebook_publication_path, client.id, "facebook_page"
+        )
+        website_publication = await asyncio.to_thread(
+            self._load_publication_summary, website_publication_path, client.id, "website"
+        )
+        publications = tuple(
+            summary
+            for summary in (facebook_publication, website_publication)
+            if summary is not None
+        )
+        attention = self._attention(brief, package, asset, preview_attention, publications)
         week = brief.week if brief is not None else package.week if package is not None else None
         strategy = StrategySummary(
             objective=brief.objective if brief is not None else None,
@@ -153,6 +175,7 @@ class LoadTodaysWork:
             content_package=self._package_status(package),
             draft_summaries=self._draft_summaries(package),
             asset=asset,
+            publications=publications,
             preview_exists=preview_exists,
             preview_attention=preview_attention,
             attention=attention,
@@ -185,6 +208,42 @@ class LoadTodaysWork:
         if not safe.is_file():
             raise TodaysWorkError(f"content package artifact is not a file: {path}")
         return ContentPackage.model_validate_json(safe.read_text(encoding="utf-8"))
+
+    def _load_publication_summary(
+        self,
+        path: Path | None,
+        client_id: ClientId,
+        platform: Literal["facebook_page", "website"],
+    ) -> PublicationSummary | None:
+        if path is None:
+            return None
+        safe = self._safe_artifact_path(path)
+        if not safe.exists():
+            return None
+        if not safe.is_file():
+            raise TodaysWorkError(f"publication artifact is not a file: {path}")
+        record = PublicationRecord.model_validate_json(safe.read_text(encoding="utf-8"))
+        if record.client_id != client_id:
+            raise TodaysWorkError("publication record client ID does not match the campaign")
+        if record.destination_platform != platform:
+            raise TodaysWorkError("publication record destination does not match its own path")
+        return PublicationSummary(
+            platform=platform,
+            state=record.status.value,
+            label=self._publication_label(record),
+            external_url=record.external_url,
+        )
+
+    @staticmethod
+    def _publication_label(record: PublicationRecord) -> str:
+        destination = "Facebook" if record.destination_platform == "facebook_page" else "Website"
+        if record.status is PublicationStatus.PUBLISHED:
+            return f"Posted to {destination}"
+        if record.status is PublicationStatus.FAILED:
+            return f"{destination} publish failed: {record.error_detail}"
+        if record.status is PublicationStatus.SKIPPED:
+            return f"{destination} publish skipped: {record.error_detail}"
+        return f"{destination} publish is still in progress"
 
     @staticmethod
     def _validate_artifact_identity(
@@ -297,6 +356,7 @@ class LoadTodaysWork:
         package: ContentPackage | None,
         asset: AssetSummary | None,
         preview_attention: str,
+        publications: tuple[PublicationSummary, ...],
     ) -> tuple[str, ...]:
         items: list[str] = []
         if brief is None:
@@ -317,4 +377,7 @@ class LoadTodaysWork:
         if asset is None or asset.availability != "available":
             items.append("The approved campaign cover is unavailable.")
         items.append(preview_attention)
+        for publication in publications:
+            if publication.state in {"failed", "pending", "skipped"}:
+                items.append(publication.label)
         return tuple(items)

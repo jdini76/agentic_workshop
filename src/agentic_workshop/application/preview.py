@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from agentic_workshop.application.assets import ClientAssetInventory
+from agentic_workshop.application.channels import channel_use
 from agentic_workshop.domain.assets import AssetApprovalState, ClientAsset, ClientAssetManifest
 from agentic_workshop.domain.content import ContentDraft, ContentPackage
 from agentic_workshop.domain.marketing import BriefApprovalState
@@ -146,24 +147,13 @@ class GenerateCampaignPreview:
         matches = [
             draft
             for draft in package.drafts
-            if GenerateCampaignPreview._channel_use(draft.channel) == required_use
+            if channel_use(draft.channel) == required_use
         ]
         if len(matches) != 1:
             raise CampaignPreviewError(
                 f"package requires exactly one assignment for {required_use}"
             )
         return matches[0]
-
-    @staticmethod
-    def _channel_use(channel: str) -> str:
-        normalized = channel.lower()
-        if "social" in normalized:
-            return "social_posts"
-        if "email" in normalized:
-            return "email_marketing"
-        if "website" in normalized:
-            return "official_website"
-        return "campaign_package_previews"
 
     @classmethod
     def _public_copy(cls, body: str, approved_destinations: tuple[str, ...]) -> str:

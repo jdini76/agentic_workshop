@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from agentic_workshop.adapters.deterministic_content import (
     DeterministicContentDraftGenerator,
 )
+from agentic_workshop.adapters.facebook_page_publisher import FacebookPagePublisher
 from agentic_workshop.adapters.filesystem_resources import (
     FilesystemResourceLoader,
     ResourceNotFoundError,
@@ -25,6 +26,7 @@ from agentic_workshop.adapters.model_attempts import (
 )
 from agentic_workshop.adapters.model_content import ModelContentDraftGenerator
 from agentic_workshop.adapters.openai_language_model import OpenAILanguageModel
+from agentic_workshop.adapters.website_publisher import WebsitePublisher
 from agentic_workshop.application.assets import ClientAssetInventory
 from agentic_workshop.application.brief_review import ReviewWeeklyMarketingBrief
 from agentic_workshop.application.content import ContentPackageError, GenerateContentPackage
@@ -38,6 +40,7 @@ from agentic_workshop.application.marketing import (
     MarketingBriefError,
 )
 from agentic_workshop.application.preview import GenerateCampaignPreview
+from agentic_workshop.application.publish_content_package import PublishApprovedContentPackage
 from agentic_workshop.application.todays_work import LoadTodaysWork
 from agentic_workshop.domain.assets import (
     AssetApprovalState,
@@ -49,8 +52,15 @@ from agentic_workshop.domain.content import ContentPackage
 from agentic_workshop.domain.identity import ClientId
 from agentic_workshop.domain.marketing import WeeklyMarketingBrief
 from agentic_workshop.domain.model_attempts import UntrustedModelAttempt
+from agentic_workshop.domain.website_content import WebsiteStaticContent
 from agentic_workshop.ports.content_generation import ContentDraftGenerator
 from agentic_workshop.ports.models import LanguageModelError
+from agentic_workshop.ports.publishing import (
+    Publisher,
+    PublisherAuthenticationError,
+    PublisherError,
+    PublishRequest,
+)
 from agentic_workshop.presentation.content_markdown import render_content_package
 from agentic_workshop.presentation.markdown import render_weekly_marketing_brief
 from agentic_workshop.presentation.todays_work import render_todays_work
@@ -62,8 +72,10 @@ DEFAULT_MODEL_ARTIFACT_ROOT = Path("artifacts") / "model-content-packages"
 DEFAULT_LIVE_SMOKE_ARTIFACT_ROOT = Path("artifacts") / "live-smoke" / "openai"
 DEFAULT_PREVIEW_ROOT = Path("artifacts") / "campaign-previews"
 DEFAULT_TODAYS_WORK_ROOT = Path("artifacts") / "todays-work"
+DEFAULT_WEBSITE_WORKING_COPY_ROOT = Path("artifacts") / "website-deploy-workspace"
 CASEY_PROMPT_RESOURCE = "prompts/casey-content-creator.v1.md"
 ASSET_MANIFEST_TEMPLATE = "client-assets/{client_id}.v1.json"
+WEBSITE_CONTENT_TEMPLATE = "website/{client_id}.v1.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,6 +109,33 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--repository-root", type=Path, default=Path.cwd())
     _add_openai_settings(live)
     live.add_argument("--confirm-paid-call", action="store_true", required=True)
+
+    facebook_live = subparsers.add_parser(
+        "live-smoke-facebook-publish",
+        help="make one explicitly confirmed live Facebook Page post",
+    )
+    facebook_live.add_argument("message")
+    facebook_live.add_argument("--image", type=Path, default=None)
+    facebook_live.add_argument("--confirm-live-post", action="store_true", required=True)
+    facebook_live.add_argument(
+        "--i-understand-this-posts-publicly", action="store_true", required=True
+    )
+
+    website_live = subparsers.add_parser(
+        "live-smoke-website-publish",
+        help="make one explicitly confirmed live website deploy",
+    )
+    website_live.add_argument("title")
+    website_live.add_argument("body")
+    website_live.add_argument("--image", type=Path, required=True)
+    website_live.add_argument("--repository-root", type=Path, default=Path.cwd())
+    website_live.add_argument(
+        "--working-copy-root", type=Path, default=DEFAULT_WEBSITE_WORKING_COPY_ROOT
+    )
+    website_live.add_argument("--confirm-live-post", action="store_true", required=True)
+    website_live.add_argument(
+        "--i-understand-this-posts-publicly", action="store_true", required=True
+    )
 
     revalidate = subparsers.add_parser(
         "revalidate-attempt",
@@ -187,6 +226,10 @@ def run(argv: Sequence[str] | None = None) -> int:
             return _generate_content_package(args)
         if args.command == "live-smoke-openai":
             return _generate_content_package(args, force_openai=True)
+        if args.command == "live-smoke-facebook-publish":
+            return _live_smoke_facebook_publish(args)
+        if args.command == "live-smoke-website-publish":
+            return _live_smoke_website_publish(args)
         if args.command == "revalidate-attempt":
             return _revalidate_attempt(args)
         if args.command == "asset-inventory":
@@ -205,6 +248,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         MarketingBriefError,
         LanguageModelError,
         OSError,
+        PublisherError,
         ValidationError,
         ValueError,
     ) as error:
@@ -561,18 +605,105 @@ def _todays_work(args: argparse.Namespace) -> int:
     return 0
 
 
+def _env_flag(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _workspace(args: argparse.Namespace) -> int:
     if not 1 <= args.port <= 65535:
         raise ValueError("workspace port must be between 1 and 65535")
     repository_root = Path.cwd().resolve(strict=True)
+    client_id = ClientId("jordan-and-the-fosters")
+    auto_publish_enabled = _env_flag("AUTO_PUBLISH_ENABLED", default=True)
+
+    facebook_publisher: Publisher | None = None
+    website_publisher: Publisher | None = None
+    if auto_publish_enabled:
+        try:
+            facebook_publisher = FacebookPagePublisher.from_environment()
+        except PublisherAuthenticationError:
+            # Credentials are not configured yet. Do not fail the whole workspace over it --
+            # every approval attempt will record a clear, visible SKIPPED publication instead.
+            facebook_publisher = None
+        try:
+            website_publisher = _build_website_publisher(
+                client_id, repository_root / DEFAULT_WEBSITE_WORKING_COPY_ROOT
+            )
+        except PublisherAuthenticationError:
+            website_publisher = None
+
+    orchestrator = PublishApprovedContentPackage(
+        repository_root,
+        facebook_publisher=facebook_publisher,
+        website_publisher=website_publisher,
+        enabled=auto_publish_enabled,
+    )
     serve_workspace(
         WorkspaceConfig(
             repository_root=repository_root,
             resource_root=PACKAGE_RESOURCE_ROOT,
-            client_id=ClientId("jordan-and-the-fosters"),
+            client_id=client_id,
             port=args.port,
+        ),
+        publish_orchestrator=orchestrator,
+    )
+    return 0
+
+
+def _build_website_publisher(client_id: ClientId, working_copy_root: Path) -> WebsitePublisher:
+    loader = FilesystemResourceLoader(PACKAGE_RESOURCE_ROOT)
+    client = ClientProfile.model_validate_json(
+        asyncio.run(loader.load_text(CLIENT_RESOURCE_TEMPLATE.format(client_id=client_id)))
+    )
+    static_content = WebsiteStaticContent.model_validate_json(
+        asyncio.run(loader.load_text(WEBSITE_CONTENT_TEMPLATE.format(client_id=client_id)))
+    )
+    return WebsitePublisher.from_environment(
+        working_copy_root=working_copy_root,
+        static_content=static_content,
+        approved_destinations=tuple(link.url for link in client.purchase_links),
+    )
+
+
+def _live_smoke_facebook_publish(args: argparse.Namespace) -> int:
+    publisher = FacebookPagePublisher.from_environment()
+    response = asyncio.run(
+        publisher.publish(
+            PublishRequest(
+                destination_platform="facebook_page",
+                text=args.message,
+                image_path=args.image,
+            )
         )
     )
+    print(response.external_post_id)
+    if response.external_url is not None:
+        print(response.external_url)
+    return 0
+
+
+def _live_smoke_website_publish(args: argparse.Namespace) -> int:
+    repository_root = args.repository_root.resolve(strict=True)
+    publisher = _build_website_publisher(
+        ClientId("jordan-and-the-fosters"),
+        (repository_root / args.working_copy_root).resolve(strict=False),
+    )
+    response = asyncio.run(
+        publisher.publish(
+            PublishRequest(
+                destination_platform="website",
+                text=args.body,
+                title=args.title,
+                image_path=args.image,
+            )
+        )
+    )
+    print(response.external_post_id)
+    if response.external_url is not None:
+        print(response.external_url)
     return 0
 
 

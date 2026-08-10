@@ -637,7 +637,7 @@ def test_complete_casey_package_presentation_and_state_aware_actions(tmp_path: P
     assert "These assumptions were recorded when Casey generated the package." in approved
     assert "The current workflow state is shown above." in approved
     assert "Package assumptions" not in approved
-    assert "This package is a draft and will not be published automatically." in approved
+    assert "This package is a draft and has not been published." in approved
     ReviewContentPackage().request_revision(package_path, "Use warmer language.")
     revision = get(app, config, "/campaign/2026-08-03/package").body.decode()
     assert "Approve Casey's package" not in revision

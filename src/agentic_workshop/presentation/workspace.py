@@ -6,7 +6,7 @@ from datetime import date
 from agentic_workshop.application.brief_review import BriefReviewAction
 from agentic_workshop.application.campaign_history import CampaignView
 from agentic_workshop.application.content_review import ContentReviewAction
-from agentic_workshop.application.todays_work import TodaysWorkSnapshot
+from agentic_workshop.application.todays_work import PublicationSummary, TodaysWorkSnapshot
 from agentic_workshop.domain.content import ContentDraft, ContentPackage
 from agentic_workshop.domain.marketing import WeeklyMarketingBrief
 
@@ -58,6 +58,9 @@ def render_workspace_home(
             f'<p><a class="button" href="{selected_path}/package/generate/confirm">'
             "Regenerate Casey's package</a></p>"
         )
+    local_banner, publication_section = _publication_banner_and_sections(
+        snapshot.publications, subject="this campaign's approved social and website drafts"
+    )
     preview_action = ""
     if snapshot.preview_state == "current":
         # Trailing slash matters here: the preview page's own relative asset paths
@@ -81,7 +84,7 @@ def render_workspace_home(
     return _page(
         "Today's Work",
         f"""{notice}
-        <p class="local">Local workspace — nothing is published.</p>
+        <p class="local">{html.escape(local_banner)}</p>
         <h1>Today's Work</h1>
         <p><strong>{client_name}</strong> · Campaign week {html.escape(week)}</p>
         <p class="status">Viewing campaign {html.escape(selected_week.isoformat())}</p>
@@ -106,6 +109,7 @@ def render_workspace_home(
           {package_link}
           {generation_link}
         </section>
+        {publication_section}
         <section><h2>Campaign cover and preview</h2>
           <p>{asset}</p>
           <p>Campaign preview: <strong>{html.escape(snapshot.preview_state)}</strong></p>
@@ -280,6 +284,7 @@ def render_package(
     actions: tuple[ContentReviewAction, ...],
     *,
     campaign_week: date,
+    publications: tuple[PublicationSummary, ...] = (),
 ) -> str:
     drafts = "".join(_render_content_draft(draft) for draft in package.drafts)
     assumptions = _list_items(package.assumptions)
@@ -304,14 +309,24 @@ def render_package(
         links.append(
             f'<a class="button secondary" href="{base}/revision/confirm">Request a revision</a>'
         )
+    for publication in publications:
+        if publication.state == "failed":
+            retry_href = f"{base}/publish-retry-{publication.platform}/confirm"
+            links.append(
+                f'<a class="button secondary" href="{retry_href}">'
+                f"Retry {_platform_label(publication.platform)} publish</a>"
+            )
     action_section = (
         f'<div class="actions">{"".join(links)}</div>'
         if links
         else "<p>No review action is available until Casey regenerates a draft.</p>"
     )
+    local_banner, publication_section = _publication_banner_and_sections(
+        publications, subject="this package"
+    )
     return _page(
         "Casey's content package",
-        f"""<p class="local">Local workspace — nothing is published.</p>
+        f"""<p class="local">{html.escape(local_banner)}</p>
         <p><a href="/campaign/{campaign_week.isoformat()}">← Today's Work</a></p>
         <h1>Casey's content package</h1>
         <p class="status">{html.escape(package.approval_state.value.replace('_', ' '))}</p>
@@ -322,6 +337,7 @@ def render_package(
           <p>{assumption_explanation}</p><ul>{assumptions}</ul>
         </section>
         <section><h2>Missing assets or information</h2><ul>{missing}</ul></section>
+        {publication_section}
         {action_section}""",
     )
 
@@ -370,6 +386,43 @@ def render_package_confirmation(
           <input type="hidden" name="week"
                  value="{html.escape(package.week.isoformat(), quote=True)}">
           {textarea}<button type="submit">{html.escape(title)}</button>
+        </form>""",
+    )
+
+
+def render_retry_publish_confirmation(
+    *,
+    campaign_week: date,
+    client_id: str,
+    package_id: str,
+    package_checksum: str,
+    platform: str,
+    error_detail: str,
+    csrf_token: str,
+    confirmation_nonce: str,
+) -> str:
+    platform_label = _platform_label(platform)
+    title = f"Retry {platform_label} publish"
+    destination_word = "Facebook" if platform == "facebook_page" else "the site"
+    retry_action = f"/campaign/{campaign_week.isoformat()}/package/publish-retry-{platform}"
+    return _page(
+        title,
+        f"""<p class="local">Local workspace — nothing is published.</p>
+        <p><a href="/campaign/{campaign_week.isoformat()}/package">
+        ← Return to Casey's package</a></p>
+        <h1>{html.escape(title)}</h1>
+        <p>The last attempt failed: {html.escape(error_detail)}</p>
+        <p>Check {html.escape(destination_word)} directly first to confirm nothing was actually
+        posted, then retry. This will attempt to publish the same approved content again.</p>
+        <form method="post" action="{html.escape(retry_action, quote=True)}">
+          <input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}">
+          <input type="hidden" name="confirmation_nonce"
+                 value="{html.escape(confirmation_nonce, quote=True)}">
+          <input type="hidden" name="client_id" value="{html.escape(client_id, quote=True)}">
+          <input type="hidden" name="week" value="{campaign_week.isoformat()}">
+          <input type="hidden" name="package_id" value="{html.escape(package_id, quote=True)}">
+          <input type="hidden" name="package_checksum" value="{package_checksum}">
+          <button type="submit">Retry publish</button>
         </form>""",
     )
 
@@ -463,6 +516,38 @@ def _page(title: str, body: str) -> str:
 <title>{html.escape(title)}</title>
 <link rel="stylesheet" href="/workspace.css">
 </head><body>{body}</body></html>"""
+
+
+def _platform_label(platform: str) -> str:
+    return "Facebook" if platform == "facebook_page" else "Website"
+
+
+def _publication_banner_and_sections(
+    publications: tuple[PublicationSummary, ...], *, subject: str
+) -> tuple[str, str]:
+    published = [pub for pub in publications if pub.state == "published"]
+    if published:
+        names = " and ".join(_platform_label(pub.platform) for pub in published)
+        local_banner = f"Local workspace — {subject} has been published to {names}."
+    else:
+        local_banner = "Local workspace — nothing is published."
+    sections = "".join(_render_publication_section(pub) for pub in publications)
+    return local_banner, sections
+
+
+def _render_publication_section(publication: PublicationSummary) -> str:
+    heading = f"{_platform_label(publication.platform)} publication"
+    link = ""
+    if publication.state == "published" and publication.external_url:
+        view_label = "the post" if publication.platform == "facebook_page" else "the site"
+        link = (
+            f' <a href="{html.escape(publication.external_url, quote=True)}" '
+            f'rel="noopener noreferrer">View {view_label}</a>'
+        )
+    return (
+        f"<section><h2>{html.escape(heading)}</h2>"
+        f'<p class="status">{html.escape(publication.label)}</p>{link}</section>'
+    )
 
 
 def _campaign_row(campaign: CampaignView, selected_week: date) -> str:

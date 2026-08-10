@@ -39,6 +39,8 @@ class CampaignRecord:
     brief_path: Path
     package_path: Path
     preview_path: Path
+    facebook_publication_path: Path
+    website_publication_path: Path
     brief: WeeklyMarketingBrief | None
     package: ContentPackage | None
 
@@ -75,6 +77,7 @@ class LoadCampaignHistory:
         self._brief_root = self._root / "artifacts" / "weekly-briefs"
         self._package_root = self._root / "artifacts" / "content-packages"
         self._preview_root = self._root / "artifacts" / "campaign-previews"
+        self._publication_root = self._root / "artifacts" / "publications"
 
     async def execute(self) -> tuple[CampaignView, ...]:
         records = await asyncio.to_thread(self._discover)
@@ -87,6 +90,8 @@ class LoadCampaignHistory:
                 brief_path=record.brief_path,
                 package_path=record.package_path,
                 preview_path=record.preview_path,
+                facebook_publication_path=record.facebook_publication_path,
+                website_publication_path=record.website_publication_path,
             )
             preview = await previews.inspect(
                 client_id=self._client_id,
@@ -94,16 +99,20 @@ class LoadCampaignHistory:
                 package_path=record.package_path,
                 preview_directory=record.preview_path.parent,
             )
+            refreshed_preview_attention = PREVIEW_ATTENTION[preview.state]
+            attention_without_stale_preview = tuple(
+                item for item in snapshot.attention if item != snapshot.preview_attention
+            )
             views.append(CampaignView(
                 record=record,
                 snapshot=snapshot.model_copy(
                     update={
                         "preview_state": preview.state,
                         "preview_diagnostic": preview.diagnostic,
-                        "preview_attention": PREVIEW_ATTENTION[preview.state],
+                        "preview_attention": refreshed_preview_attention,
                         "attention": (
-                            *snapshot.attention[:-1],
-                            PREVIEW_ATTENTION[preview.state],
+                            *attention_without_stale_preview,
+                            refreshed_preview_attention,
                         ),
                     }
                 ),
@@ -134,6 +143,14 @@ class LoadCampaignHistory:
                     self._preview_root
                     / f"{self._client_id}-{week.isoformat()}-content"
                     / "index.html"
+                ),
+                facebook_publication_path=(
+                    self._publication_root
+                    / f"{self._client_id}-{week.isoformat()}-content-facebook_page.json"
+                ),
+                website_publication_path=(
+                    self._publication_root
+                    / f"{self._client_id}-{week.isoformat()}-content-website.json"
                 ),
                 brief=cast(
                     WeeklyMarketingBrief | None,

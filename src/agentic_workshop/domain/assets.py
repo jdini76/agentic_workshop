@@ -112,6 +112,13 @@ class ClientAsset(DomainModel):
             value is not None for value in parent_fields
         ):
             raise ValueError("derivative parent and transformation fields must be complete")
+        # These two literal strings block only *blanket* publication/delivery grants -- an
+        # approved_uses value that would authorize an asset for any and every destination. A
+        # narrow, destination-specific use (e.g. "facebook_page_auto_publish" or
+        # "website_auto_publish") is a deliberate, separate opt-in per destination and does not
+        # match this set. It still authorizes nothing by itself: publishing an asset also
+        # requires the package it's attached to to be approved by the CEO. See
+        # application/publish_content_package.py.
         forbidden_uses = {"automatic_publication", "external_delivery"}
         if forbidden_uses.intersection(self.approved_uses):
             raise ValueError("asset use cannot authorize publication or external delivery")

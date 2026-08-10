@@ -108,7 +108,7 @@ https://www.amazon.com/gp/aw/d/B0D5BT1XDZ
 
 ## Package assumptions
 
-- This package is a draft and will not be published automatically.
+- This package is a draft and has not been published.
 - Only client_profile.approved_facts are available as factual claims.
 
 ## Package missing assets or information

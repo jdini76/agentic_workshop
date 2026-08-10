@@ -2,6 +2,7 @@
 
 from collections import Counter
 
+from agentic_workshop.application.channels import channel_use
 from agentic_workshop.domain.assets import AssetRecommendation
 from agentic_workshop.domain.clients import ClientProfile
 from agentic_workshop.domain.content import ContentDraft, ContentPackage
@@ -90,7 +91,7 @@ class GenerateContentPackage:
             brand_voice=client.brand_voice,
             drafts=drafts,
             assumptions=(
-                "This package is a draft and will not be published automatically.",
+                "This package is a draft and has not been published.",
                 "Only client_profile.approved_facts are available as factual claims.",
             ),
             missing_assets_or_information=missing,
@@ -100,7 +101,7 @@ class GenerateContentPackage:
         )
 
     def _attach_assignment_assets(self, draft: ContentDraft) -> ContentDraft:
-        required_use = self._channel_asset_use(draft.channel)
+        required_use = channel_use(draft.channel)
         recommendations = tuple(
             recommendation
             for recommendation in self._asset_recommendations
@@ -113,17 +114,6 @@ class GenerateContentPackage:
                 "asset_recommendations": recommendations,
             }
         )
-
-    @staticmethod
-    def _channel_asset_use(channel: str) -> str:
-        normalized = channel.lower()
-        if "social" in normalized:
-            return "social_posts"
-        if "email" in normalized:
-            return "email_marketing"
-        if "website" in normalized:
-            return "official_website"
-        return "campaign_package_previews"
 
     @staticmethod
     def _validate_drafts(

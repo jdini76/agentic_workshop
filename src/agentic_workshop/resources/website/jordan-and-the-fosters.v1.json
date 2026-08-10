@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "client_id": "jordan-and-the-fosters",
+  "site_title": "Joe Schmoe Publishing",
+  "nav_items": [
+    { "label": "Home", "anchor": "top" },
+    { "label": "About the Book", "anchor": "book" },
+    { "label": "About the Author", "anchor": "author" },
+    { "label": "Reviews", "anchor": "reviews" },
+    { "label": "Contact", "anchor": "contact" }
+  ],
+  "author_byline": "By Joe Dinicola",
+  "purchase_label": "Buy Now",
+  "purchase_url": "https://www.amazon.com/dp/B0D5BT1XDZ",
+  "author_heading": "About the Author",
+  "author_bio_paragraphs": [
+    "Joe Dinicola, a native of Scotch Plains, New Jersey, is an accomplished author with a passion for storytelling. He earned his Bachelor of Science in Computer Information Systems from Rider University. Joe is happily married to his wife Beth, and they have three boys, Russell, Joey, and Ray, along with their beloved dog, Jordan.",
+    "Specializing in children's books and science fiction, Joe has authored the children's book \"Jordan and the Fosters\" and co-wrote the acclaimed science fiction novel \"Project Return Fire.\" His talent has been recognized in several screenwriting competitions, showcasing his ability to craft engaging and imaginative narratives.",
+    "Inspired by the movies he watched growing up and the dynamic life with his family, Joe's work is infused with creativity and authenticity. When he's not writing, Joe applies his analytical skills in his role as a software testing manager in the software development industry.",
+    "Joe Dinicola continues to balance his professional career with his writing, always looking for new ways to captivate his audience with his unique stories."
+  ],
+  "author_photo_relative_path": "assets/author-photo.jpg",
+  "reviews_heading": "What readers are saying about Jordan and the Fosters",
+  "reviews": [
+    {
+      "quote": "Joe Dinicola tells a tale that would likely inspire a child and parent to explore ways to express care for others.",
+      "attribution": "Constance Stadler, Reader's Favorite"
+    },
+    {
+      "quote": "Joe Dinicola brings us an engaging children's story based on his real family's commitment to fostering dogs in need of permanent homes.",
+      "attribution": "Tom Kranz, Type. Tune. Tint"
+    },
+    {
+      "quote": "Liked the meaning behind the story and chance to discuss with children importance of compassion which extends to people as well as needy pets.",
+      "attribution": "Amazon Reviewer"
+    }
+  ],
+  "contact_email": "joedinicolawriter@gmail.com",
+  "contact_links": [
+    { "label": "Facebook", "url": "https://www.facebook.com/profile.php?id=61559388791570" },
+    { "label": "Instagram", "url": "https://www.instagram.com/jordanandthefosters/" },
+    { "label": "TikTok", "url": "https://www.tiktok.com/@jordanandthefosters" }
+  ],
+  "source_reference": "website/jordan-and-the-fosters.v1.json"
+}

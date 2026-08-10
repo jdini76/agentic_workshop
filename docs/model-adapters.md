@@ -166,3 +166,117 @@ This explicit factory is preferred over provider discovery by imports or a depen
 framework: it makes installed optional dependencies, secret requirements, and the selected billing
 boundary obvious. Provider packages may later be optional extras so an Ollama-only installation does
 not install paid-provider SDKs.
+
+## The Publisher port: the same pattern applied to outbound delivery
+
+`Publisher` (`ports/publishing.py`) is the second application port built on this pattern, this time
+for delivering approved content to an external destination rather than generating it. The same two
+boundaries from the compatibility review above hold here too:
+
+1. Content-review and approval logic (`application/content_review.py`) does not depend on
+   `Publisher` at all; `ReviewContentPackage.approve()` stays a pure, network-free file transition.
+   A separate orchestrator, `PublishApprovedContentPackage` (`application/publish_content_package.py`),
+   receives the port through constructor injection and runs only after approval already succeeded.
+2. Provider request objects, response objects, errors, credentials, and SDK/HTTP details stay inside
+   the adapter module (`adapters/facebook_page_publisher.py`). The application and domain layers see
+   only `PublishRequest`, `PublishResponse`, and the normalized `Publisher*Error` hierarchy.
+
+The first implementation is `FacebookPagePublisher`, posting to a Meta Graph API Page. The second is
+`WebsitePublisher` (`adapters/website_publisher.py`), covered in its own section below. Future
+adapters (an Instagram adapter once a public image host exists; a TikTok adapter once TikTok audits
+this integration) can be added the same way, without changing `PublishApprovedContentPackage` or
+any deliverable model.
+
+Since Facebook and the website are independent destinations, `PublishApprovedContentPackage`
+publishes to each separately — one destination's failure, missing configuration, or missing
+eligible draft never blocks the other's attempt, and each writes its own `PublicationRecord`
+(`{client_id}-{week}-content-facebook_page.json` / `-website.json`). `execute()` returns a
+`PublicationOutcome{facebook_page, website}` with both results, not a single record.
+
+Normalized publisher errors mirror the model-port table above: `PublisherAuthenticationError`,
+`PublisherRateLimitError` (with `retry_after_seconds`), `PublisherTimeoutError`,
+`PublisherContentRejectedError` (policy/spam rejections), `PublisherMalformedResponseError`, and
+`PublisherUnavailableError`. A failed publish never raises out of
+`PublishApprovedContentPackage.execute()` — it is recorded as a `FAILED` `PublicationRecord` with a
+sanitized `error_detail`, surfaced through Today's Work, and left for deliberate operator-initiated
+retry rather than automatic retry (see the plan rationale on idempotency).
+
+Credentials follow the same OS-env-then-repository-`.env` pattern as the OpenAI adapter, via the
+shared `adapters/env_credentials.py` helper:
+
+```text
+AUTO_PUBLISH_ENABLED=true
+FACEBOOK_PAGE_ID=<page-id>
+FACEBOOK_PAGE_ACCESS_TOKEN=<injected-by-the-process-or-secret-manager>
+FACEBOOK_GRAPH_API_VERSION=v21.0
+```
+
+If `AUTO_PUBLISH_ENABLED` is true but credentials are missing or an obvious placeholder, the
+workspace does not fail to start — `FacebookPagePublisher.from_environment()` is attempted once at
+startup, and if it raises `PublisherAuthenticationError` the orchestrator runs with no publisher
+configured, recording a `SKIPPED` publication with a clear diagnostic on every approval instead.
+This mirrors the model port's "fail fast at construction, never silently at request time" rule, but
+applied so that an unconfigured integration degrades visibly rather than blocking the whole
+workspace.
+
+Live verification uses the same convention as `live-smoke-openai`: a `live-smoke-facebook-publish`
+CLI command makes one real, explicitly confirmed call against production credentials. Because this
+call is publicly visible rather than merely billed, it requires two confirmation flags
+(`--confirm-live-post` and `--i-understand-this-posts-publicly`) instead of one.
+
+## WebsitePublisher: git as the source of truth, cPanel's own API as the deploy trigger
+
+The live site (`jordanandthefosters.fun`) is built with a proprietary drag-and-drop "Website
+Builder" bundled with the host, not hand-editable files — so `WebsitePublisher` doesn't touch
+`public_html` directly. Instead it treats a separate GitHub repository as the site's real source of
+truth and lets cPanel's own **Git™ Version Control** feature pull and deploy from there:
+
+1. Render the homepage (`presentation/website_site.py` — plain f-strings and `html.escape`, no
+   templating dependency, same convention as `content_markdown.py` and `preview.py`), write it into
+   a local git working copy, commit, and `git push` to GitHub over HTTPS using a token embedded in
+   the remote URL (`https://x-access-token:{GITHUB_TOKEN}@github.com/...`) — no SSH key needed for
+   this leg, so it works even on shared hosting where SSH/shell access is disabled.
+2. Call cPanel's own **UAPI** (`VersionControlDeployment` module) over HTTPS on port 2083,
+   authenticated with a cPanel API token via the `Authorization: cpanel {username}:{token}` header —
+   a core cPanel API surface distinct from actual shell access, so it needs no SSH either. This
+   queues a deploy, then polls until it reports `complete` or `failed`.
+
+Git subprocess calls go through an injected `GitRunner` protocol (mirroring how `httpx.AsyncClient`
+is injected into `FacebookPagePublisher`) wrapping the system `git` binary via `subprocess.run` in
+`asyncio.to_thread` — no new dependency (`GitPython`, etc.) for what's a handful of straightforward
+invocations, and easily faked in tests.
+
+Only the weekly "current pitch" block (Casey's `official_website` draft: a title plus ~100-140
+words) is regenerated on each publish — the surrounding static content (author bio, reviews,
+contact links) comes from `resources/website/{client_id}.v1.json`, validated by
+`domain/website_content.py`'s `WebsiteStaticContent`, and is carried over verbatim from what the CEO
+already published by hand. It is deliberately outside Casey's governed-facts/approved-reviews
+system — this is the CEO's own already-published content being preserved during the format
+conversion, not new content Casey is generating or sourcing.
+
+Credentials, same OS-env-then-`.env` pattern:
+
+```text
+GITHUB_TOKEN=<injected-by-the-process-or-secret-manager>
+GITHUB_REPO=<owner>/<repo>
+GITHUB_BRANCH=main
+CPANEL_USERNAME=<cpanel-account-username>
+CPANEL_API_TOKEN=<injected-by-the-process-or-secret-manager>
+CPANEL_HOST=<cpanel-server-hostname>
+CPANEL_GIT_REPO_NAME=<repo-name-as-registered-in-cPanel-Git-Version-Control>
+WEBSITE_CANONICAL_URL=https://jordanandthefosters.fun
+```
+
+No separate enable flag: `WebsitePublisher` reuses `AUTO_PUBLISH_ENABLED`, and the same
+credentials-missing-means-`SKIPPED` degradation as Facebook lets Facebook and the website be
+configured independently and at different times.
+
+Live verification: `live-smoke-website-publish` mirrors `live-smoke-facebook-publish`'s two-flag
+pattern. Point the cPanel repo's Pull Directory at a throwaway staging path before ever repointing
+it at `public_html` — the site is live and in active use, so nothing should land there unreviewed.
+
+**Honest caveat, not silently assumed as fact:** the exact UAPI function names
+(`VersionControlDeployment::create` / `::retrieve`) are the standard cPanel Git Version Control API
+surface, but were not confirmed against this specific account's live API during implementation —
+confirm against that account's self-documented `/execute/` endpoints before depending on this in
+production.
