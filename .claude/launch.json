@@ -6,6 +6,12 @@
       "runtimeExecutable": ".venv/Scripts/agentic-workshop.exe",
       "runtimeArgs": ["workspace", "--port", "8880"],
       "port": 8880
+    },
+    {
+      "name": "website-preview",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8881", "--directory", "artifacts/website-preview"],
+      "port": 8881
     }
   ]
 }

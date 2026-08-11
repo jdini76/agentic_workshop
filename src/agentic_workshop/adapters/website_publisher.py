@@ -130,6 +130,12 @@ class WebsitePublisher(Publisher):
 
         github_token = required("GITHUB_TOKEN")
         github_repo = required("GITHUB_REPO")
+        if "://" in github_repo or github_repo.startswith("git@"):
+            raise PublisherAuthenticationError(
+                "GITHUB_REPO must be in 'owner/repo' form (e.g. 'jdini76/jatf_website'), not a "
+                "full clone URL; no website deploy was made",
+                provider=WEBSITE_PROVIDER,
+            )
         cpanel_username = required("CPANEL_USERNAME")
         cpanel_api_token = required("CPANEL_API_TOKEN")
         cpanel_host = required("CPANEL_HOST")
@@ -169,30 +175,27 @@ class WebsitePublisher(Publisher):
         self._write_homepage(request.title, request.text, request.image_path)
 
         status = await self._run_git(["status", "--porcelain"])
-        if not status.stdout.strip():
-            head = await self._run_git(["rev-parse", "HEAD"])
-            return PublishResponse(
-                external_post_id=head.stdout.strip(),
-                external_url=self._canonical_url,
-                provider_metadata={"provider": WEBSITE_PROVIDER, "deployed": False},
+        if status.stdout.strip():
+            await self._run_git(["add", "-A"])
+            await self._run_git(
+                [
+                    "-c",
+                    "user.name=agentic-workshop",
+                    "-c",
+                    "user.email=agentic-workshop@localhost",
+                    "commit",
+                    "-m",
+                    f"Publish: {request.title}",
+                ]
             )
-
-        await self._run_git(["add", "-A"])
-        await self._run_git(
-            [
-                "-c",
-                "user.name=agentic-workshop",
-                "-c",
-                "user.email=agentic-workshop@localhost",
-                "commit",
-                "-m",
-                f"Publish: {request.title}",
-            ]
-        )
-        await self._run_git(["push", "origin", f"HEAD:{self._branch}"])
+            await self._run_git(["push", "origin", f"HEAD:{self._branch}"])
         head = await self._run_git(["rev-parse", "HEAD"])
         commit_sha = head.stdout.strip()
 
+        # Always attempt the deploy, even when the working copy already matched the desired
+        # content (nothing to commit) -- that can happen after a prior attempt's git push
+        # succeeded but its cPanel deploy failed. Skipping the deploy here would silently turn
+        # a deliberate retry into a no-op, defeating the whole point of the retry action.
         await self._deploy_and_wait()
 
         return PublishResponse(
@@ -291,27 +294,44 @@ class WebsitePublisher(Publisher):
             {"repository_root": self._cpanel_git_repo_name},
         )
         data = payload.get("data")
-        deployment_id = data.get("id") if isinstance(data, dict) else None
-        if not isinstance(deployment_id, (str, int)):
+        deploy_id = data.get("deploy_id") if isinstance(data, dict) else None
+        if not isinstance(deploy_id, (str, int)):
             raise PublisherMalformedResponseError(
-                "cPanel deployment response did not include a deployment ID",
+                "cPanel deployment response did not include a deploy_id",
                 provider=WEBSITE_PROVIDER,
             )
-        return str(deployment_id)
+        return str(deploy_id)
 
-    async def _poll_deploy(self, deployment_id: str) -> str:
+    async def _poll_deploy(self, deploy_id: str) -> str:
+        # retrieve returns every deployment for this repository as a list, not a single
+        # object keyed by ID, and reports outcome via which `timestamps` keys are present
+        # rather than a literal status string -- confirmed against this account's live API,
+        # not assumed from documentation.
         payload = await self._call_uapi(
             "VersionControlDeployment",
             "retrieve",
-            {"deployment_id": deployment_id},
+            {"repository_root": self._cpanel_git_repo_name},
         )
         data = payload.get("data")
-        status = data.get("status") if isinstance(data, dict) else None
-        if not isinstance(status, str):
+        if not isinstance(data, list):
             raise PublisherMalformedResponseError(
                 "cPanel deployment status response was malformed", provider=WEBSITE_PROVIDER
             )
-        return status
+        matches = [
+            entry
+            for entry in data
+            if isinstance(entry, dict) and str(entry.get("deploy_id")) == deploy_id
+        ]
+        if not matches:
+            return "pending"
+        timestamps = matches[0].get("timestamps")
+        if not isinstance(timestamps, dict):
+            return "pending"
+        if any(key in timestamps for key in ("failed", "error", "errored")):
+            return "failed"
+        if "succeeded" in timestamps:
+            return "complete"
+        return "pending"
 
     async def _call_uapi(
         self, module: str, function: str, params: dict[str, str]
