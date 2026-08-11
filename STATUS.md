@@ -1,5 +1,43 @@
 # Agentic Workshop — Status Log
 
+## 2026-08-10 — Claude Code session — website auto-publish live-verified end-to-end
+
+Finished the setup from the 2026-08-06 entry below and ran `live-smoke-website-publish` for real
+against the live account. **It worked** — confirmed by fetching the deployed page directly, not
+just trusting the CLI's exit code: real title, the actual "About the Book" pitch text, the real
+author bio, all three reviews with correct wording, and the real cover image, all live at
+`https://jordanandthefosters.fun/staging/`. The full pipeline (render → git commit → push to
+GitHub → trigger cPanel deploy via UAPI → poll to completion) is now proven working against this
+account, not just passing against mocks.
+
+Getting there surfaced real setup mistakes and one real bug, all now fixed:
+
+- **`GITHUB_REPO` must be `owner/repo`** (e.g. `jdini76/jatf_website`), not the full clone URL —
+  pasting the URL produced a doubled, malformed remote and a confusing git error. `WebsitePublisher`
+  now rejects a URL-shaped value immediately with a clear message instead of failing deep inside a
+  git clone.
+- **`CPANEL_HOST` was a typo** (`server245.namecheaphosting.com`, which doesn't resolve) — the real
+  hostname, found via reverse DNS on the site's own IP, is `server245-4.web-hosting.com`.
+- **`CPANEL_GIT_REPO_NAME` needs the full absolute path** (`/home/jordscjd/jatf_website`), not the
+  short repo name — cPanel's UAPI `repository_root` parameter rejected the short form outright.
+- **The UAPI response shapes were wrong** (confirmed against this account's live API, not
+  documentation, which didn't have this level of detail available): `VersionControlDeployment::create`
+  returns `data.deploy_id` (an integer), not `data.id`. `::retrieve` returns `data` as a **list** of
+  every past deployment for the repo, not a single object, and reports outcome via which
+  `timestamps` keys are present (`succeeded`, or presumably `failed`/`error`/`errored`) rather than
+  a literal status string. Both `_trigger_deploy`/`_poll_deploy` were rewritten to match.
+- **Real bug, not a setup mistake**: a retry after a successful git push but a failed cPanel deploy
+  used to silently no-op, because the "nothing changed, skip commit" short-circuit also skipped the
+  deploy trigger entirely. Fixed so the deploy always runs even when there's nothing new to commit —
+  otherwise the "Retry publish" button would do nothing for this specific failure mode.
+
+All of this is covered by new/updated tests (21 in `test_website_publisher.py`), full suite green,
+`ruff`/`mypy --strict` clean. Facebook credentials are still not configured — only the website side
+has been live-verified so far.
+
+**Still open**: the site is only deployed to `/staging/`, not `public_html` — repointing
+`.cpanel.yml`'s `DEPLOYPATH` to go live is a deliberate manual step, not done yet.
+
 ## 2026-08-06 (latest) — Claude Code session — SSL fixed, site rebuild approved, website auto-publish implemented
 
 **Two things happened this session, in order: a real production outage got found and fixed, then a
