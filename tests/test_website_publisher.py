@@ -3,6 +3,7 @@ import json
 import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -70,38 +71,75 @@ class FakeGitRunner:
         return subprocess.CompletedProcess(list(args), 0, stdout="", stderr="")
 
 
-def _success_uapi_handler(request: httpx.Request) -> httpx.Response:
-    if request.url.path.endswith("/create"):
-        return httpx.Response(200, json={"status": 1, "data": {"deploy_id": 1}})
-    if request.url.path.endswith("/retrieve"):
+class FakeGitHubActionsAPI:
+    """Stateful fake for the GitHub Actions endpoints WebsitePublisher polls.
+
+    `list_responses` is a queue of workflow_runs lists, one consumed per GET call to the
+    runs-list endpoint; the last entry repeats for any further calls once exhausted -- this is
+    what lets a single fake represent "run appears after N polls" and "run never completes".
+    """
+
+    def __init__(
+        self,
+        *,
+        list_responses: list[list[dict[str, Any]]],
+        dispatch_status_code: int = 204,
+        list_status_code: int = 200,
+    ) -> None:
+        self._list_responses = list_responses
+        self._dispatch_status_code = dispatch_status_code
+        self._list_status_code = list_status_code
+        self.list_call_count = 0
+        self.dispatch_call_count = 0
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/dispatches"):
+            self.dispatch_call_count += 1
+            return httpx.Response(self._dispatch_status_code)
+        if request.url.path.endswith("/runs"):
+            index = min(self.list_call_count, len(self._list_responses) - 1)
+            runs = self._list_responses[index]
+            self.list_call_count += 1
+            return httpx.Response(self._list_status_code, json={"workflow_runs": runs})
+        return httpx.Response(404)
+
+
+def _immediate_success_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.path.endswith("/runs"):
         return httpx.Response(
             200,
-            json={"status": 1, "data": [{"deploy_id": 1, "timestamps": {"succeeded": 1.0}}]},
+            json={
+                "workflow_runs": [
+                    {
+                        "id": 1,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "html_url": "https://github.com/owner/repo/actions/runs/1",
+                    }
+                ]
+            },
         )
-    return httpx.Response(404)
+    return httpx.Response(204)
 
 
 def _publisher(
     git_runner: FakeGitRunner,
     *,
     working_copy_root: Path,
-    uapi_handler: Callable[[httpx.Request], httpx.Response] = _success_uapi_handler,
+    actions_handler: Callable[[httpx.Request], httpx.Response] = _immediate_success_handler,
     already_cloned: bool = True,
 ) -> WebsitePublisher:
     working_copy_root.mkdir(parents=True, exist_ok=True)
     if already_cloned:
         (working_copy_root / ".git").mkdir(exist_ok=True)
-    transport = httpx.MockTransport(uapi_handler)
-    http_client = httpx.AsyncClient(transport=transport, base_url="https://host.example:2083")
+    transport = httpx.MockTransport(actions_handler)
+    http_client = httpx.AsyncClient(transport=transport, base_url="https://api.github.com")
     return WebsitePublisher(
         git_runner,
         http_client,
         working_copy_root=working_copy_root,
         github_token="ghp_supersecret",
         github_repo="owner/repo",
-        cpanel_username="user1",
-        cpanel_api_token="cptoken",
-        cpanel_git_repo_name="jordan-site",
         static_content=_static_content(),
         approved_destinations=("https://www.amazon.com/dp/B0D5BT1XDZ",),
     )
@@ -124,7 +162,20 @@ def _request(tmp_path: Path, **overrides: object) -> PublishRequest:
 def test_publish_writes_files_commits_pushes_and_deploys(tmp_path: Path) -> None:
     working_copy = tmp_path / "site"
     git_runner = FakeGitRunner()
-    publisher = _publisher(git_runner, working_copy_root=working_copy)
+    api = FakeGitHubActionsAPI(
+        list_responses=[
+            [{"id": 1, "status": "queued", "html_url": "https://github.com/owner/repo/1"}],
+            [
+                {
+                    "id": 1,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/owner/repo/1",
+                }
+            ],
+        ]
+    )
+    publisher = _publisher(git_runner, working_copy_root=working_copy, actions_handler=api.handle)
 
     response = asyncio.run(publisher.publish(_request(tmp_path)))
 
@@ -136,6 +187,8 @@ def test_publish_writes_files_commits_pushes_and_deploys(tmp_path: Path) -> None
     assert "When Trust Takes Time" in (working_copy / "index.html").read_text(encoding="utf-8")
     actions = [call[0] for call in git_runner.calls]
     assert actions == ["fetch", "reset", "status", "add", "-c", "push", "rev-parse"]
+    # A brand-new commit is found via GitHub's own `on: push` trigger -- no dispatch needed.
+    assert api.dispatch_call_count == 0
 
 
 def test_publish_clones_when_no_existing_working_copy(tmp_path: Path) -> None:
@@ -155,38 +208,64 @@ def test_publish_clones_when_no_existing_working_copy(tmp_path: Path) -> None:
 def test_publish_skips_commit_and_push_when_nothing_changed(tmp_path: Path) -> None:
     working_copy = tmp_path / "site"
     git_runner = FakeGitRunner(status_output="")
-    publisher = _publisher(git_runner, working_copy_root=working_copy)
+    api = FakeGitHubActionsAPI(
+        list_responses=[
+            [],  # existing-run snapshot, before dispatch: nothing yet
+            [
+                {
+                    "id": 1,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/owner/repo/1",
+                }
+            ],
+        ]
+    )
+    publisher = _publisher(git_runner, working_copy_root=working_copy, actions_handler=api.handle)
 
     response = asyncio.run(publisher.publish(_request(tmp_path)))
 
-    # The deploy still runs even with nothing new to commit -- a prior attempt may have pushed
-    # successfully but failed to deploy, and a retry must not silently skip retrying that.
+    # The deploy is still force-dispatched even with nothing new to commit -- a prior attempt
+    # may have pushed successfully but failed to deploy, and a retry must not silently no-op.
     assert response.provider_metadata["deployed"] is True
     actions = [call[0] for call in git_runner.calls]
     assert "commit" not in actions
     assert "push" not in actions
     assert actions == ["fetch", "reset", "status", "rev-parse"]
+    assert api.dispatch_call_count == 1
 
 
-def test_publish_always_deploys_even_when_working_copy_already_matched(tmp_path: Path) -> None:
+def test_retry_dispatch_finds_the_new_run_not_a_stale_prior_one(tmp_path: Path) -> None:
+    """Exercises the seen_run_ids disambiguation directly: an old, already-completed run for
+    this exact commit SHA must never be mistaken for the freshly dispatched one."""
     working_copy = tmp_path / "site"
-    deploy_calls: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        deploy_calls.append(request.url.path)
-        if request.url.path.endswith("/create"):
-            return httpx.Response(200, json={"status": 1, "data": {"deploy_id": 1}})
-        return httpx.Response(
-            200,
-            json={"status": 1, "data": [{"deploy_id": 1, "timestamps": {"succeeded": 1.0}}]},
-        )
-
     git_runner = FakeGitRunner(status_output="")
-    publisher = _publisher(git_runner, working_copy_root=working_copy, uapi_handler=handler)
+    stale_run = {
+        "id": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/owner/repo/1",
+    }
+    fresh_queued = {"id": 2, "status": "queued", "html_url": "https://github.com/owner/repo/2"}
+    fresh_done = {
+        "id": 2,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/owner/repo/2",
+    }
+    api = FakeGitHubActionsAPI(
+        list_responses=[
+            [stale_run],  # existing-run snapshot, before dispatch
+            [fresh_queued, stale_run],  # first poll after dispatch
+            [fresh_done, stale_run],  # second poll after dispatch
+        ]
+    )
+    publisher = _publisher(git_runner, working_copy_root=working_copy, actions_handler=api.handle)
 
-    asyncio.run(publisher.publish(_request(tmp_path)))
+    response = asyncio.run(publisher.publish(_request(tmp_path)))
 
-    assert any(path.endswith("/create") for path in deploy_calls)
+    assert response.provider_metadata["deployed"] is True
+    assert api.dispatch_call_count == 1
 
 
 def test_publish_requires_title(tmp_path: Path) -> None:
@@ -272,98 +351,90 @@ def test_git_not_installed_is_normalized(tmp_path: Path) -> None:
         asyncio.run(publisher.publish(_request(tmp_path)))
 
 
-def test_uapi_authentication_failure_is_normalized(tmp_path: Path) -> None:
+def test_github_actions_authentication_failure_is_normalized(tmp_path: Path) -> None:
     working_copy = tmp_path / "site"
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403)
 
-    publisher = _publisher(FakeGitRunner(), working_copy_root=working_copy, uapi_handler=handler)
+    publisher = _publisher(FakeGitRunner(), working_copy_root=working_copy, actions_handler=handler)
 
     with pytest.raises(PublisherAuthenticationError):
         asyncio.run(publisher.publish(_request(tmp_path)))
 
 
-def test_uapi_non_json_response_is_normalized(tmp_path: Path) -> None:
+def test_github_actions_non_json_response_is_normalized(tmp_path: Path) -> None:
     working_copy = tmp_path / "site"
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="not-json")
 
-    publisher = _publisher(FakeGitRunner(), working_copy_root=working_copy, uapi_handler=handler)
+    publisher = _publisher(FakeGitRunner(), working_copy_root=working_copy, actions_handler=handler)
 
     with pytest.raises(PublisherMalformedResponseError):
         asyncio.run(publisher.publish(_request(tmp_path)))
 
 
-def test_uapi_status_zero_is_normalized(tmp_path: Path) -> None:
+def test_github_actions_run_conclusion_failure_is_normalized(tmp_path: Path) -> None:
     working_copy = tmp_path / "site"
+    api = FakeGitHubActionsAPI(
+        list_responses=[
+            [
+                {
+                    "id": 1,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "html_url": "https://github.com/owner/repo/1",
+                }
+            ]
+        ]
+    )
+    publisher = _publisher(
+        FakeGitRunner(), working_copy_root=working_copy, actions_handler=api.handle
+    )
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/create"):
-            return httpx.Response(200, json={"status": 0, "errors": ["repo not found"]})
-        return httpx.Response(404)
-
-    publisher = _publisher(FakeGitRunner(), working_copy_root=working_copy, uapi_handler=handler)
-
-    with pytest.raises(PublisherError, match="repo not found"):
+    with pytest.raises(PublisherError, match="failure"):
         asyncio.run(publisher.publish(_request(tmp_path)))
 
 
-def test_uapi_deployment_failed_status_is_normalized(tmp_path: Path) -> None:
-    working_copy = tmp_path / "site"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/create"):
-            return httpx.Response(200, json={"status": 1, "data": {"deploy_id": 1}})
-        if request.url.path.endswith("/retrieve"):
-            return httpx.Response(
-                200,
-                json={"status": 1, "data": [{"deploy_id": 1, "timestamps": {"failed": 1.0}}]},
-            )
-        return httpx.Response(404)
-
-    publisher = _publisher(FakeGitRunner(), working_copy_root=working_copy, uapi_handler=handler)
-
-    with pytest.raises(PublisherError, match="failed"):
-        asyncio.run(publisher.publish(_request(tmp_path)))
-
-
-def test_uapi_poll_budget_exhausted_raises_timeout(
+def test_github_actions_poll_budget_exhausted_raises_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import agentic_workshop.adapters.website_publisher as website_publisher_module
 
-    monkeypatch.setattr(website_publisher_module, "DEPLOY_POLL_MAX_ATTEMPTS", 2)
-    monkeypatch.setattr(website_publisher_module, "DEPLOY_POLL_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(website_publisher_module, "ACTIONS_POLL_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(website_publisher_module, "ACTIONS_POLL_INTERVAL_SECONDS", 0.0)
+    working_copy = tmp_path / "site"
+    api = FakeGitHubActionsAPI(
+        list_responses=[[{"id": 1, "status": "in_progress", "html_url": "https://x"}]]
+    )
+    publisher = _publisher(
+        FakeGitRunner(), working_copy_root=working_copy, actions_handler=api.handle
+    )
+
+    with pytest.raises(PublisherTimeoutError):
+        asyncio.run(publisher.publish(_request(tmp_path)))
+
+
+def test_github_actions_dispatch_not_found_is_normalized(tmp_path: Path) -> None:
     working_copy = tmp_path / "site"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/create"):
-            return httpx.Response(200, json={"status": 1, "data": {"deploy_id": 1}})
-        if request.url.path.endswith("/retrieve"):
-            return httpx.Response(
-                200, json={"status": 1, "data": [{"deploy_id": 1, "timestamps": {"queued": 1.0}}]}
-            )
+        if request.url.path.endswith("/runs"):
+            return httpx.Response(200, json={"workflow_runs": []})
         return httpx.Response(404)
 
-    publisher = _publisher(FakeGitRunner(), working_copy_root=working_copy, uapi_handler=handler)
+    git_runner = FakeGitRunner(status_output="")  # forces the retry/dispatch path
+    publisher = _publisher(git_runner, working_copy_root=working_copy, actions_handler=handler)
 
-    with pytest.raises(PublisherTimeoutError):
+    with pytest.raises(PublisherError, match="404"):
         asyncio.run(publisher.publish(_request(tmp_path)))
 
 
 def test_missing_credentials_fail_before_any_request(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    for name in (
-        "GITHUB_TOKEN",
-        "GITHUB_REPO",
-        "CPANEL_USERNAME",
-        "CPANEL_API_TOKEN",
-        "CPANEL_HOST",
-        "CPANEL_GIT_REPO_NAME",
-    ):
+    for name in ("GITHUB_TOKEN", "GITHUB_REPO"):
         monkeypatch.delenv(name, raising=False)
 
     with pytest.raises(PublisherAuthenticationError, match="GITHUB_TOKEN"):
@@ -387,10 +458,6 @@ def test_github_repo_rejects_a_full_clone_url(
 ) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_token")
     monkeypatch.setenv("GITHUB_REPO", value)
-    monkeypatch.setenv("CPANEL_USERNAME", "user1")
-    monkeypatch.setenv("CPANEL_API_TOKEN", "cptoken")
-    monkeypatch.setenv("CPANEL_HOST", "host.example")
-    monkeypatch.setenv("CPANEL_GIT_REPO_NAME", "jatf_website")
 
     with pytest.raises(PublisherAuthenticationError, match="owner/repo"):
         WebsitePublisher.from_environment(
@@ -406,20 +473,11 @@ def test_dotenv_loading_and_operating_system_precedence(
 ) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "GITHUB_TOKEN=dotenv-token\n"
-        "GITHUB_REPO=dotenv/repo\n"
-        "CPANEL_USERNAME=dotenv-user\n"
-        "CPANEL_API_TOKEN=dotenv-cptoken\n"
-        "CPANEL_HOST=dotenv-host\n"
-        "CPANEL_GIT_REPO_NAME=dotenv-site\n",
+        "GITHUB_TOKEN=dotenv-token\nGITHUB_REPO=dotenv/repo\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("GITHUB_TOKEN", "os-token")
     monkeypatch.setenv("GITHUB_REPO", "os/repo")
-    monkeypatch.setenv("CPANEL_USERNAME", "os-user")
-    monkeypatch.setenv("CPANEL_API_TOKEN", "os-cptoken")
-    monkeypatch.setenv("CPANEL_HOST", "os-host")
-    monkeypatch.setenv("CPANEL_GIT_REPO_NAME", "os-site")
 
     publisher = WebsitePublisher.from_environment(
         working_copy_root=tmp_path / "site",
@@ -430,4 +488,3 @@ def test_dotenv_loading_and_operating_system_precedence(
 
     assert publisher._github_token == "os-token"
     assert publisher._github_repo == "os/repo"
-    assert publisher._cpanel_git_repo_name == "os-site"

@@ -1,15 +1,29 @@
 """Website adapter for the provider-neutral Publisher port.
 
 Publishes by pushing a rendered static homepage to a GitHub repo (the site's source of truth,
-git-token-authenticated over HTTPS, no SSH key needed), then triggers cPanel's own Git Version
-Control feature to pull and deploy it via cPanel's UAPI over HTTPS with a cPanel API token --
-also no SSH/shell access needed, since UAPI is a core cPanel API surface separate from actual
-shell access.
+git-token-authenticated over HTTPS, no SSH key needed from this adapter). A GitHub Actions
+workflow in that repo (a separate repo from this one -- see jatf_website's own
+.github/workflows/deploy.yml), triggered directly by that push, rsyncs or SFTPs the files to the
+server -- bypassing cPanel's own Git Version Control "pull from remote" feature entirely.
 
-Honest caveat: the exact UAPI module/function names below (VersionControlDeployment::create /
-::retrieve) are the standard cPanel Git Version Control API surface, but have not been verified
-against this specific account's live API. Confirm against that account's own self-documented
-/execute/ endpoints before depending on this in production -- see docs/model-adapters.md.
+That's a deliberate design change, not the original one: cPanel's own pull-from-GitHub tracking
+was confirmed broken for this repo during live testing -- both its UI button and the identical
+UAPI call this adapter used to make reported the deployed content was current when it demonstrably
+wasn't. Most likely cause: the repo was originally cloned by hand in a terminal rather than through
+cPanel's own repo-creation flow, leaving its internal tracking permanently out of sync with the
+real repository state on disk. See docs/model-adapters.md and STATUS.md for the full
+investigation.
+
+Since GitHub Actions runs asynchronously, deploy success is confirmed by polling the GitHub
+Actions API for a workflow run tied to the pushed commit, not by any direct call to the hosting
+provider. When there's nothing new to commit (a deliberate retry after a prior deploy failure),
+a fresh run is force-started via `workflow_dispatch` instead, since GitHub's own `on: push`
+trigger will not fire a second time for identical content.
+
+Honest caveat: whether this cPanel account has genuine full-shell or SFTP SSH access (distinct
+from the git-shell-restricted deploy key already proven to work only for git clone/push) was not
+confirmed as of this adapter's writing -- see the deploy workflow's rsync/SFTP variants and
+STATUS.md.
 """
 
 import asyncio
@@ -42,8 +56,10 @@ WEBSITE_PROVIDER = "website"
 DEFAULT_CANONICAL_URL = "https://jordanandthefosters.fun"
 DEFAULT_BRANCH = "main"
 GIT_TIMEOUT_SECONDS = 60.0
-DEPLOY_POLL_INTERVAL_SECONDS = 2.0
-DEPLOY_POLL_MAX_ATTEMPTS = 30
+GITHUB_API_BASE_URL = "https://api.github.com"
+GITHUB_WORKFLOW_FILE = "deploy.yml"
+ACTIONS_POLL_INTERVAL_SECONDS = 3.0
+ACTIONS_POLL_MAX_ATTEMPTS = 60
 
 
 class GitRunner(Protocol):
@@ -74,7 +90,7 @@ class SubprocessGitRunner:
 
 
 class WebsitePublisher(Publisher):
-    """Render Casey's approved website draft into the site and deploy it via cPanel."""
+    """Render Casey's approved website draft into the site and deploy it via GitHub Actions."""
 
     def __init__(
         self,
@@ -84,9 +100,6 @@ class WebsitePublisher(Publisher):
         working_copy_root: Path,
         github_token: str,
         github_repo: str,
-        cpanel_username: str,
-        cpanel_api_token: str,
-        cpanel_git_repo_name: str,
         static_content: WebsiteStaticContent,
         approved_destinations: tuple[str, ...],
         canonical_url: str = DEFAULT_CANONICAL_URL,
@@ -97,9 +110,6 @@ class WebsitePublisher(Publisher):
         self._working_copy_root = working_copy_root
         self._github_token = github_token
         self._github_repo = github_repo
-        self._cpanel_username = cpanel_username
-        self._cpanel_api_token = cpanel_api_token
-        self._cpanel_git_repo_name = cpanel_git_repo_name
         self._static_content = static_content
         self._approved_destinations = approved_destinations
         self._canonical_url = canonical_url
@@ -136,19 +146,19 @@ class WebsitePublisher(Publisher):
                 "full clone URL; no website deploy was made",
                 provider=WEBSITE_PROVIDER,
             )
-        cpanel_username = required("CPANEL_USERNAME")
-        cpanel_api_token = required("CPANEL_API_TOKEN")
-        cpanel_host = required("CPANEL_HOST")
-        cpanel_git_repo_name = required("CPANEL_GIT_REPO_NAME")
         canonical_url = (
             environment_value("WEBSITE_CANONICAL_URL", local_values) or DEFAULT_CANONICAL_URL
         )
         branch = environment_value("GITHUB_BRANCH", local_values) or DEFAULT_BRANCH
 
         http_client = httpx.AsyncClient(
-            base_url=f"https://{cpanel_host}:2083",
+            base_url=GITHUB_API_BASE_URL,
             timeout=timeout_seconds,
-            headers={"Authorization": f"cpanel {cpanel_username}:{cpanel_api_token}"},
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
         )
         return cls(
             SubprocessGitRunner(),
@@ -156,9 +166,6 @@ class WebsitePublisher(Publisher):
             working_copy_root=working_copy_root,
             github_token=github_token,
             github_repo=github_repo,
-            cpanel_username=cpanel_username,
-            cpanel_api_token=cpanel_api_token,
-            cpanel_git_repo_name=cpanel_git_repo_name,
             static_content=static_content,
             approved_destinations=approved_destinations,
             canonical_url=canonical_url,
@@ -175,7 +182,8 @@ class WebsitePublisher(Publisher):
         self._write_homepage(request.title, request.text, request.image_path)
 
         status = await self._run_git(["status", "--porcelain"])
-        if status.stdout.strip():
+        pushed_new_commit = bool(status.stdout.strip())
+        if pushed_new_commit:
             await self._run_git(["add", "-A"])
             await self._run_git(
                 [
@@ -192,11 +200,20 @@ class WebsitePublisher(Publisher):
         head = await self._run_git(["rev-parse", "HEAD"])
         commit_sha = head.stdout.strip()
 
-        # Always attempt the deploy, even when the working copy already matched the desired
-        # content (nothing to commit) -- that can happen after a prior attempt's git push
-        # succeeded but its cPanel deploy failed. Skipping the deploy here would silently turn
-        # a deliberate retry into a no-op, defeating the whole point of the retry action.
-        await self._deploy_and_wait()
+        if pushed_new_commit:
+            # A brand-new commit SHA cannot have any pre-existing workflow runs, so there is
+            # nothing to disambiguate -- the push's own `on: push` trigger creates the run.
+            seen_run_ids: frozenset[int] = frozenset()
+        else:
+            # Nothing new to commit -- this is the retry path: a prior push already succeeded
+            # but its deploy failed, or an operator is deliberately retrying identical content.
+            # `git push` will not happen again, so `on: push` will not fire again either --
+            # force a fresh run instead, snapshotting existing runs for this commit first so
+            # polling can tell the new run apart from any stale prior run for the same SHA.
+            seen_run_ids = await self._existing_run_ids(commit_sha)
+            await self._dispatch_workflow()
+
+        await self._await_deploy(commit_sha, seen_run_ids=seen_run_ids)
 
         return PublishResponse(
             external_post_id=commit_sha,
@@ -271,105 +288,97 @@ class WebsitePublisher(Publisher):
             )
         return PublisherError(f"git {action} failed: {sanitized}", provider=WEBSITE_PROVIDER)
 
-    async def _deploy_and_wait(self) -> None:
-        deployment_id = await self._trigger_deploy()
-        for _ in range(DEPLOY_POLL_MAX_ATTEMPTS):
-            status = await self._poll_deploy(deployment_id)
-            if status == "complete":
-                return
-            if status == "failed":
+    async def _await_deploy(self, commit_sha: str, *, seen_run_ids: frozenset[int]) -> None:
+        for _ in range(ACTIONS_POLL_MAX_ATTEMPTS):
+            run = await self._find_new_run(commit_sha, seen_run_ids)
+            if run is not None and run.get("status") == "completed":
+                if run.get("conclusion") == "success":
+                    return
+                run_url = run.get("html_url", "no run URL available")
                 raise PublisherError(
-                    "cPanel deployment reported failed", provider=WEBSITE_PROVIDER
+                    f"GitHub Actions deploy run concluded {run.get('conclusion')!r} ({run_url})",
+                    provider=WEBSITE_PROVIDER,
                 )
-            await asyncio.sleep(DEPLOY_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(ACTIONS_POLL_INTERVAL_SECONDS)
         raise PublisherTimeoutError(
-            "cPanel deployment did not complete before the poll budget was exhausted",
+            "GitHub Actions deploy run did not complete before the poll budget was exhausted",
             provider=WEBSITE_PROVIDER,
         )
 
-    async def _trigger_deploy(self) -> str:
-        payload = await self._call_uapi(
-            "VersionControlDeployment",
-            "create",
-            {"repository_root": self._cpanel_git_repo_name},
-        )
-        data = payload.get("data")
-        deploy_id = data.get("deploy_id") if isinstance(data, dict) else None
-        if not isinstance(deploy_id, (str, int)):
-            raise PublisherMalformedResponseError(
-                "cPanel deployment response did not include a deploy_id",
-                provider=WEBSITE_PROVIDER,
-            )
-        return str(deploy_id)
-
-    async def _poll_deploy(self, deploy_id: str) -> str:
-        # retrieve returns every deployment for this repository as a list, not a single
-        # object keyed by ID, and reports outcome via which `timestamps` keys are present
-        # rather than a literal status string -- confirmed against this account's live API,
-        # not assumed from documentation.
-        payload = await self._call_uapi(
-            "VersionControlDeployment",
-            "retrieve",
-            {"repository_root": self._cpanel_git_repo_name},
-        )
-        data = payload.get("data")
-        if not isinstance(data, list):
-            raise PublisherMalformedResponseError(
-                "cPanel deployment status response was malformed", provider=WEBSITE_PROVIDER
-            )
-        matches = [
-            entry
-            for entry in data
-            if isinstance(entry, dict) and str(entry.get("deploy_id")) == deploy_id
+    async def _find_new_run(
+        self, commit_sha: str, seen_run_ids: frozenset[int]
+    ) -> dict[str, Any] | None:
+        runs = await self._list_workflow_runs(commit_sha)
+        candidates = [
+            run
+            for run in runs
+            if isinstance(run.get("id"), int) and run["id"] not in seen_run_ids
         ]
-        if not matches:
-            return "pending"
-        timestamps = matches[0].get("timestamps")
-        if not isinstance(timestamps, dict):
-            return "pending"
-        if any(key in timestamps for key in ("failed", "error", "errored")):
-            return "failed"
-        if "succeeded" in timestamps:
-            return "complete"
-        return "pending"
+        return candidates[0] if candidates else None
 
-    async def _call_uapi(
-        self, module: str, function: str, params: dict[str, str]
-    ) -> dict[str, Any]:
-        try:
-            response = await self._http.post(f"/execute/{module}/{function}", data=params)
-        except httpx.TimeoutException:
-            raise PublisherTimeoutError(
-                "cPanel UAPI request timed out", provider=WEBSITE_PROVIDER
-            ) from None
-        except httpx.ConnectError:
-            raise PublisherUnavailableError(
-                "cPanel could not be reached", provider=WEBSITE_PROVIDER
-            ) from None
+    async def _existing_run_ids(self, commit_sha: str) -> frozenset[int]:
+        runs = await self._list_workflow_runs(commit_sha)
+        return frozenset(run["id"] for run in runs if isinstance(run.get("id"), int))
 
-        if response.status_code in (401, 403):
-            raise PublisherAuthenticationError(
-                f"cPanel rejected the API token ({response.status_code})",
-                provider=WEBSITE_PROVIDER,
-            )
-        if response.status_code >= 400:
-            raise PublisherError(
-                f"cPanel UAPI request failed ({response.status_code})", provider=WEBSITE_PROVIDER
-            )
+    async def _list_workflow_runs(self, commit_sha: str) -> list[dict[str, Any]]:
+        response = await self._github_request(
+            "GET",
+            f"/repos/{self._github_repo}/actions/workflows/{GITHUB_WORKFLOW_FILE}/runs",
+            params={"head_sha": commit_sha, "per_page": "10"},
+        )
         try:
             payload = response.json()
         except ValueError:
             raise PublisherMalformedResponseError(
-                "cPanel UAPI returned a non-JSON response", provider=WEBSITE_PROVIDER
+                "GitHub Actions returned a non-JSON response", provider=WEBSITE_PROVIDER
             ) from None
-        if not isinstance(payload, dict):
+        runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
+        if not isinstance(runs, list):
             raise PublisherMalformedResponseError(
-                "cPanel UAPI response was not a JSON object", provider=WEBSITE_PROVIDER
+                "GitHub Actions run list response was malformed", provider=WEBSITE_PROVIDER
             )
-        if payload.get("status") == 0:
-            errors = payload.get("errors") or ["unknown error"]
-            raise PublisherError(
-                f"cPanel UAPI {module}/{function} failed: {'; '.join(map(str, errors))}",
+        return runs
+
+    async def _dispatch_workflow(self) -> None:
+        await self._github_request(
+            "POST",
+            f"/repos/{self._github_repo}/actions/workflows/{GITHUB_WORKFLOW_FILE}/dispatches",
+            json_body={"ref": self._branch},
+        )
+
+    async def _github_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        json_body: dict[str, object] | None = None,
+    ) -> httpx.Response:
+        try:
+            response = await self._http.request(method, path, params=params, json=json_body)
+        except httpx.TimeoutException:
+            raise PublisherTimeoutError(
+                "GitHub Actions request timed out", provider=WEBSITE_PROVIDER
+            ) from None
+        except httpx.ConnectError:
+            raise PublisherUnavailableError(
+                "GitHub could not be reached", provider=WEBSITE_PROVIDER
+            ) from None
+
+        if response.status_code in (401, 403):
+            raise PublisherAuthenticationError(
+                "GitHub rejected the request -- confirm GITHUB_TOKEN has Actions read/write "
+                f"permission ({response.status_code})",
                 provider=WEBSITE_PROVIDER,
             )
-        return payload
+        if response.status_code == 404:
+            raise PublisherError(
+                "GitHub returned 404 -- confirm GITHUB_REPO and the deploy workflow file exist",
+                provider=WEBSITE_PROVIDER,
+            )
+        if response.status_code >= 400:
+            raise PublisherError(
+                f"GitHub Actions request failed ({response.status_code})",
+                provider=WEBSITE_PROVIDER,
+            )
+        return response

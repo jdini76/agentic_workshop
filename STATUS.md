@@ -1,5 +1,82 @@
 # Agentic Workshop — Status Log
 
+## 2026-08-12 — Claude Code session — Website deploy replaced: cPanel UAPI → GitHub Actions
+
+The same session's website live-verification (previous entry) surfaced a second, deeper problem:
+cPanel's own Git Version Control "Update from Remote" feature — both the UI button and the
+identical UAPI call (`VersionControl/update`) `WebsitePublisher` was calling — does not actually
+detect new commits on this account. Proven live, not assumed: pushed a genuinely new commit,
+`VersionControlDeployment::create` reported success, but the deployed content stayed on the
+previous commit. Confirmed the UI button calls the exact same endpoints my code did (the user
+supplied the real network request URLs), which ruled out an API-shape bug and pointed at the
+feature itself. Root cause, confirmed by the user: the `jatf_website` repo was originally cloned
+by hand via a cPanel terminal session rather than through cPanel's own repo-creation flow, so
+cPanel's internal pull-tracking metadata is permanently desynced from the real on-disk repo — only
+a manual `git pull` in a cPanel terminal actually updates it. That's incompatible with an
+autonomous publish feature.
+
+**Fix**: stopped asking cPanel to pull from GitHub at all. `WebsitePublisher` still does the same
+git clone/commit/push it always did (unchanged), but everything downstream of a successful push
+was rewritten: a GitHub Actions workflow (`.github/workflows/deploy.yml`, in the separate
+`jatf_website` repo) triggered directly by `on: push`, rsyncs files straight to the server over
+SSH — bypassing cPanel's Git Version Control feature entirely. For the retry case (nothing new to
+commit, but a prior deploy attempt needs to be re-run), the adapter now force-starts a fresh run
+via `workflow_dispatch`, using a `seen_run_ids` snapshot taken before dispatching so polling can
+tell the new run apart from a stale one on the same commit SHA. Polls
+`GET .../actions/workflows/deploy.yml/runs?head_sha=...` until a new run completes;
+`conclusion: "success"` → done, anything else → `PublisherError` with the run's `html_url` so a
+failure is actually debuggable.
+
+Code changes: `adapters/website_publisher.py` rewritten (constructor drops all `CPANEL_*` params,
+`from_environment()` now only requires `GITHUB_TOKEN`/`GITHUB_REPO`, builds an `httpx.AsyncClient`
+against `api.github.com`); `tests/test_website_publisher.py` rewritten (new `FakeGitHubActionsAPI`
+transport handler, 21 tests including a dedicated `seen_run_ids` disambiguation test); `.env.example`
+and `application/publish_content_package.py` had `CPANEL_*` references removed; `docs/model-adapters.md`
+rewritten to match. Two workflow files were authored in the separate `jatf_website` repo —
+`.github/workflows/deploy.yml` (primary, rsync-over-SSH via `easingthemes/ssh-deploy@main`) and
+`.github/deploy-sftp-fallback.yml.disabled` (SFTP-only fallback, in case the account turns out not
+to have genuine shell access) — but **not yet committed/pushed**, since they depend on setup steps
+below that only the user can do.
+
+Full quality gate passed: `ruff check .`, `mypy src` (64 files, no issues), `pytest -q` (full
+suite), and a repo-wide grep confirmed zero stray `CPANEL_*` references remain in `src/`, `tests/`,
+`.env.example`, or `docs/`.
+
+**Remaining setup before this is live** (none of these can be done from the CLI):
+1. Verify in cPanel → Security → SSH Access whether `jordscjd` has genuine full-shell SSH access
+   (not just the existing git-shell-only key used for clone/push) — this decides rsync vs. SFTP
+   variant. Generate a new dedicated keypair if the existing one can't run shell commands.
+2. Add that key's public half to the account's `authorized_keys`.
+3. Add `SSH_PRIVATE_KEY` as a GitHub Actions Secret on the `jatf_website` repo.
+4. Commit `.github/workflows/deploy.yml` (the correct variant per step 1) to `jatf_website`'s `main`.
+5. Regenerate/update the `GITHUB_TOKEN` fine-grained PAT to add `Actions: write` (it currently only
+   has `Contents: write`).
+6. Manual test outside this codebase: push a trivial commit to `jatf_website` by hand, confirm in
+   GitHub's Actions tab that the workflow runs and files land in `/home/jordscjd/jatf_html/staging`.
+7. Then run `live-smoke-website-publish` for real end-to-end verification through this codebase,
+   and eventually a real package approval to confirm the orchestrator's retry path
+   (`workflow_dispatch`) works for real.
+
+## 2026-08-12 — Claude Code session — Facebook Page auto-publish live-verified end-to-end
+
+Finished Meta setup (Business app, `Agentic_Workshop_Publisher` System User, Page task assignment)
+and ran `live-smoke-facebook-publish` for real. **It worked** — confirmed by fetching the post back
+via the Graph API directly, not just trusting the CLI's exit code: real message, real timestamp,
+real permalink. Both publishing destinations (Facebook and the website) are now live-verified
+end-to-end against real accounts, not just passing against mocks.
+
+**The real gotcha, worth remembering**: a Business Manager **System User's own access token is not
+the same thing as a Page Access Token**, even once that System User has full task permissions
+(`CREATE_CONTENT`, `MANAGE`, etc.) on the Page. Posting with the System User's own token fails with
+a Graph API `(#200)` permissions error every time, regardless of how the Page-level task assignment
+is configured — the error message is misleading, since it reads like a permissions problem on the
+Page assignment, when the real issue is using the wrong *token*. The fix: call `GET /me/accounts`
+with the System User's token — it returns each managed Page along with **that Page's own derived
+access token**, which is what actually has posting rights. `FACEBOOK_PAGE_ACCESS_TOKEN` must be that
+derived Page token, not the System User's own token. No code changes were needed for this one — it
+was entirely a credential-value mistake, easy to make since Meta's UI doesn't make the distinction
+obvious anywhere in the System User token generation flow itself.
+
 ## 2026-08-10 — Claude Code session — website auto-publish live-verified end-to-end
 
 Finished the setup from the 2026-08-06 entry below and ran `live-smoke-website-publish` for real

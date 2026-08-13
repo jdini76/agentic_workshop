@@ -224,22 +224,44 @@ CLI command makes one real, explicitly confirmed call against production credent
 call is publicly visible rather than merely billed, it requires two confirmation flags
 (`--confirm-live-post` and `--i-understand-this-posts-publicly`) instead of one.
 
-## WebsitePublisher: git as the source of truth, cPanel's own API as the deploy trigger
+## WebsitePublisher: git as the source of truth, GitHub Actions as the deploy trigger
 
 The live site (`jordanandthefosters.fun`) is built with a proprietary drag-and-drop "Website
 Builder" bundled with the host, not hand-editable files — so `WebsitePublisher` doesn't touch
-`public_html` directly. Instead it treats a separate GitHub repository as the site's real source of
-truth and lets cPanel's own **Git™ Version Control** feature pull and deploy from there:
+`public_html` directly. Instead it treats a separate GitHub repository (`jatf_website`, not this
+one) as the site's real source of truth:
 
 1. Render the homepage (`presentation/website_site.py` — plain f-strings and `html.escape`, no
    templating dependency, same convention as `content_markdown.py` and `preview.py`), write it into
    a local git working copy, commit, and `git push` to GitHub over HTTPS using a token embedded in
    the remote URL (`https://x-access-token:{GITHUB_TOKEN}@github.com/...`) — no SSH key needed for
-   this leg, so it works even on shared hosting where SSH/shell access is disabled.
-2. Call cPanel's own **UAPI** (`VersionControlDeployment` module) over HTTPS on port 2083,
-   authenticated with a cPanel API token via the `Authorization: cpanel {username}:{token}` header —
-   a core cPanel API surface distinct from actual shell access, so it needs no SSH either. This
-   queues a deploy, then polls until it reports `complete` or `failed`.
+   this leg.
+2. A GitHub Actions workflow in that same repo (`.github/workflows/deploy.yml`), triggered directly
+   by that push, rsyncs or SFTPs the files straight to the server. `WebsitePublisher` doesn't call
+   anything to start this — GitHub's own `on: push` trigger does — it confirms success by polling
+   the GitHub Actions REST API (`GET /repos/{repo}/actions/workflows/deploy.yml/runs?head_sha=...`)
+   for a run tied to the commit it just pushed, until that run reaches `status: "completed"` with
+   `conclusion: "success"`.
+
+**This is a deliberate design change, not the original one**, and the reason is worth recording:
+cPanel's own Git Version Control "Update from Remote" feature — both its UI button and the UAPI
+call this adapter originally used — was live-tested and confirmed **not to work** for this repo.
+Two live tests pushed a genuinely new commit to GitHub; cPanel's deploy API reported success both
+times, but the deployed content stayed on the *previous* commit. The user independently confirmed
+even manually clicking "Update from Remote" reports "already up to date" when it demonstrably
+isn't. Best explanation: the repo was originally cloned by hand in a cPanel terminal rather than
+through cPanel's own repo-creation flow, leaving its internal tracking of the remote permanently
+out of sync with the real repository state on disk — a one-off setup artifact, not a general flaw
+in cPanel's Git feature. Switching the deploy mechanism to GitHub Actions sidesteps that broken
+tracking entirely rather than trying to work around it. Full investigation trail in `STATUS.md`.
+
+Since a retry (an operator-initiated re-publish of identical content) produces no new commit,
+GitHub's `on: push` trigger won't fire a second time for it. `WebsitePublisher` handles this by
+snapshotting existing workflow-run IDs for that commit, then explicitly `POST`ing to the
+`.../dispatches` endpoint to force a fresh run, and polling for a run *not* in that snapshot — so a
+stale, already-completed run for the same commit is never mistaken for the new one. This preserves
+the same "retry always genuinely re-attempts the deploy" guarantee the orchestrator's retry action
+depends on elsewhere in the app.
 
 Git subprocess calls go through an injected `GitRunner` protocol (mirroring how `httpx.AsyncClient`
 is injected into `FacebookPagePublisher`) wrapping the system `git` binary via `subprocess.run` in
@@ -260,23 +282,27 @@ Credentials, same OS-env-then-`.env` pattern:
 GITHUB_TOKEN=<injected-by-the-process-or-secret-manager>
 GITHUB_REPO=<owner>/<repo>
 GITHUB_BRANCH=main
-CPANEL_USERNAME=<cpanel-account-username>
-CPANEL_API_TOKEN=<injected-by-the-process-or-secret-manager>
-CPANEL_HOST=<cpanel-server-hostname>
-CPANEL_GIT_REPO_NAME=<repo-name-as-registered-in-cPanel-Git-Version-Control>
 WEBSITE_CANONICAL_URL=https://jordanandthefosters.fun
 ```
+
+`GITHUB_TOKEN` needs both `Contents` (read/write, for pushing the rendered site) and `Actions`
+(read/write, for triggering and polling the deploy workflow) permissions on the fine-grained PAT
+scoped to `GITHUB_REPO` — `Actions: write` specifically, not just read, since the retry path issues
+a `workflow_dispatch` call. The SSH credential the deploy workflow itself uses to reach the server
+lives entirely as a GitHub Actions Secret on the `jatf_website` repo — it never touches this repo's
+`.env` or any local machine `WebsitePublisher` runs on.
 
 No separate enable flag: `WebsitePublisher` reuses `AUTO_PUBLISH_ENABLED`, and the same
 credentials-missing-means-`SKIPPED` degradation as Facebook lets Facebook and the website be
 configured independently and at different times.
 
 Live verification: `live-smoke-website-publish` mirrors `live-smoke-facebook-publish`'s two-flag
-pattern. Point the cPanel repo's Pull Directory at a throwaway staging path before ever repointing
+pattern. Point the deploy workflow's target path at a throwaway staging path before ever repointing
 it at `public_html` — the site is live and in active use, so nothing should land there unreviewed.
 
-**Honest caveat, not silently assumed as fact:** the exact UAPI function names
-(`VersionControlDeployment::create` / `::retrieve`) are the standard cPanel Git Version Control API
-surface, but were not confirmed against this specific account's live API during implementation —
-confirm against that account's self-documented `/execute/` endpoints before depending on this in
-production.
+**Honest caveat, not silently assumed as fact:** whether this cPanel account has genuine full-shell
+or SFTP-capable SSH access — distinct from the git-shell-restricted deploy key already proven to
+work only for `git clone`/`push`, which explicitly cannot run rsync or SFTP payload commands — was
+not confirmed as of this design. The deploy workflow has two variants (rsync-over-SSH and an
+SFTP-only fallback) precisely because of that open question; see `STATUS.md` for which one this
+account actually needed.

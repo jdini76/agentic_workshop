@@ -123,8 +123,7 @@ class PublishApprovedContentPackage:
             publisher=self._website_publisher,
             include_title=True,
             unconfigured_detail=(
-                "Website credentials are not configured (GITHUB_TOKEN / GITHUB_REPO / "
-                "CPANEL_API_TOKEN / CPANEL_USERNAME / CPANEL_HOST / CPANEL_GIT_REPO_NAME); "
+                "Website credentials are not configured (GITHUB_TOKEN / GITHUB_REPO); "
                 "auto-publish is enabled but cannot run yet."
             ),
             no_channel_detail=(
