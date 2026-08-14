@@ -182,6 +182,120 @@ def _orchestrator(
     )
 
 
+def _write_two_asset_manifest(root: Path, *, permitted_uses: tuple[str, ...]) -> tuple[
+    ClientAssetManifest, tuple[AssetRecommendation, ...]
+]:
+    """Two approved, equally-eligible assets, for testing weekly rotation among them."""
+    recommendations = []
+    entries = []
+    for asset_id, filename in (("cover", "cover.png"), ("photo", "photo.png")):
+        png = _make_test_png()
+        path = root / "assets" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png)
+        entries.append(
+            {
+                "asset_id": asset_id,
+                "asset_version": 1,
+                "name": asset_id,
+                "description": "Approved asset",
+                "asset_type": "front_cover",
+                "repository_path": f"assets/{filename}",
+                "file_format": "png",
+                "dimensions": {"width_px": 1, "height_px": 1},
+                "file_size_bytes": len(png),
+                "checksum": {"algorithm": "sha256", "value": hashlib.sha256(png).hexdigest()},
+                "source": {
+                    "source_type": "ceo_supplied_local_file",
+                    "description": "Supplied locally by CEO",
+                },
+                "approval_state": "approved",
+                "revision_note": None,
+                "approved_uses": list(permitted_uses),
+                "permitted_transformations": [],
+                "attribution": {"text": None, "required": False, "status": "not_confirmed"},
+                "restrictions": ["Do not transform"],
+            }
+        )
+        recommendations.append(
+            AssetRecommendation(
+                asset_id=asset_id,
+                asset_type="front_cover",
+                repository_path=f"assets/{filename}",
+                manifest_source="client-assets/jordan-and-the-fosters.v1.json",
+                availability="available",
+                diagnostic="verified",
+                approved_use="content_package_asset_recommendation",
+                permitted_uses=permitted_uses,
+            )
+        )
+    manifest = ClientAssetManifest.model_validate(
+        {
+            "schema_version": 1,
+            "manifest_revision": 1,
+            "client_id": "jordan-and-the-fosters",
+            "source_reference": "client-assets/jordan-and-the-fosters.v1.json",
+            "assets": entries,
+        }
+    )
+    return manifest, tuple(recommendations)
+
+
+def test_asset_selection_rotates_deterministically_across_the_eligible_pool(
+    tmp_path: Path,
+) -> None:
+    manifest, recommendations = _write_two_asset_manifest(
+        tmp_path, permitted_uses=(FACEBOOK_ASSET_USE,)
+    )
+    draft = ContentDraft(
+        assignment="Facebook post",
+        channel="Social Media",
+        title="Jordan and the Fosters",
+        body="Check out the new book!",
+        brand_voice_applied=("warm",),
+        approved_facts_used=(),
+        source_references=("clients/jordan-and-the-fosters.v1.json",),
+        missing_assets_or_information=(),
+        required_assets=(),
+        asset_recommendations=recommendations,
+    )
+    publisher = FakePublisher(
+        [
+            PublishResponse(external_post_id="1", external_url="https://facebook.com/1"),
+            PublishResponse(external_post_id="2", external_url="https://facebook.com/2"),
+        ]
+    )
+    orchestrator = _orchestrator(tmp_path, facebook_publisher=publisher)
+
+    week_a = date(2026, 8, 3)
+    week_b = date(2026, 8, 10)
+    asyncio.run(
+        orchestrator.execute(
+            package=_package(drafts=(draft,), approval_state=BriefApprovalState.APPROVED)
+            .model_copy(update={"week": week_a, "package_id": "week-a"}),
+            package_checksum=CHECKSUM_A,
+            manifest=manifest,
+        )
+    )
+    asyncio.run(
+        orchestrator.execute(
+            package=_package(drafts=(draft,), approval_state=BriefApprovalState.APPROVED)
+            .model_copy(update={"week": week_b, "package_id": "week-b"}),
+            package_checksum=CHECKSUM_B,
+            manifest=manifest,
+        )
+    )
+
+    sorted_ids = sorted(recommendation.asset_id for recommendation in recommendations)
+    expected_a = sorted_ids[week_a.toordinal() % len(sorted_ids)]
+    expected_b = sorted_ids[week_b.toordinal() % len(sorted_ids)]
+    assert expected_a != expected_b, "test weeks must land on different pool members"
+    assert publisher.calls[0].image_path is not None
+    assert publisher.calls[0].image_path.name == f"{expected_a}.png"
+    assert publisher.calls[1].image_path is not None
+    assert publisher.calls[1].image_path.name == f"{expected_b}.png"
+
+
 def test_disabled_orchestrator_is_a_noop(tmp_path: Path) -> None:
     manifest = _write_manifest(tmp_path, permitted_uses=(FACEBOOK_ASSET_USE,))
     package = _package(drafts=(_social_draft(permitted_uses=(FACEBOOK_ASSET_USE,)),))

@@ -12,6 +12,7 @@ from agentic_workshop.application.assets import PNG_SIGNATURE, ClientAssetInvent
 from agentic_workshop.cli import run
 from agentic_workshop.domain.assets import (
     AssetApprovalState,
+    ClientAsset,
     ClientAssetManifest,
 )
 
@@ -235,9 +236,16 @@ def test_jordan_original_checksum_is_unchanged_when_local_original_exists() -> N
         assert hashlib.sha256(original_path.read_bytes()).hexdigest() == original.checksum.value
 
 
+def _asset(manifest: ClientAssetManifest, asset_id: str) -> ClientAsset:
+    matches = [asset for asset in manifest.assets if asset.asset_id == asset_id]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def test_jordan_derivative_preserves_aspect_ratio_and_contains_no_private_metadata() -> None:
     manifest = load_jordan_manifest()
-    original, derivative = manifest.assets
+    original = _asset(manifest, "jordan-and-the-fosters-front-cover")
+    derivative = _asset(manifest, "jordan-and-the-fosters-front-cover-marketing-1600h")
     derivative_path = REPOSITORY_ROOT / derivative.repository_path
     raw = derivative_path.read_bytes()
 
@@ -252,9 +260,10 @@ def test_jordan_derivative_preserves_aspect_ratio_and_contains_no_private_metada
     assert derivative.transformation.embedded_metadata_removed
 
 
-def test_approved_derivative_is_the_only_available_marketing_recommendation() -> None:
+def test_approved_derivative_is_an_available_marketing_recommendation() -> None:
     manifest = load_jordan_manifest()
-    original, derivative = manifest.assets
+    original = _asset(manifest, "jordan-and-the-fosters-front-cover")
+    derivative = _asset(manifest, "jordan-and-the-fosters-front-cover-marketing-1600h")
 
     recommendations = asyncio.run(
         ClientAssetInventory(REPOSITORY_ROOT).recommendations(manifest)
@@ -270,14 +279,18 @@ def test_approved_derivative_is_the_only_available_marketing_recommendation() ->
         "facebook_page_auto_publish",
         "website_auto_publish",
     )
-    assert len(recommendations) == 1
-    assert recommendations[0].asset_id == derivative.asset_id
-    assert recommendations[0].availability == "available"
-    assert original.asset_id not in {item.asset_id for item in recommendations}
+    recommended_ids = {item.asset_id for item in recommendations}
+    assert derivative.asset_id in recommended_ids
+    assert original.asset_id not in recommended_ids
+    matching = [item for item in recommendations if item.asset_id == derivative.asset_id]
+    assert len(matching) == 1
+    assert matching[0].availability == "available"
 
 
 def test_approved_derivative_authorizes_publication_only_for_named_destinations() -> None:
-    derivative = load_jordan_manifest().assets[1]
+    derivative = _asset(
+        load_jordan_manifest(), "jordan-and-the-fosters-front-cover-marketing-1600h"
+    )
 
     assert "automatic_publication" not in derivative.approved_uses
     assert "external_delivery" not in derivative.approved_uses

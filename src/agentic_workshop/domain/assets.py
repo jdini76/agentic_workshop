@@ -13,6 +13,7 @@ class AssetType(StrEnum):
     """Supported semantic roles for client assets."""
 
     FRONT_COVER = "front_cover"
+    PHOTO = "photo"
 
 
 class AssetApprovalState(StrEnum):
@@ -51,13 +52,20 @@ class AssetAttribution(DomainModel):
 
 
 class AssetTransformation(DomainModel):
-    """Exact, non-generative transformation provenance for one derivative."""
+    """Exact, non-generative transformation provenance for one derivative.
 
-    operation: Literal["resize_and_strip_metadata"]
+    Two operations are recognized: "resize_and_strip_metadata" (the front-cover derivative --
+    resized and metadata-stripped) and "strip_metadata" (metadata-stripped only, dimensions
+    unchanged). Resize-only fields (maximum_height_px, resampling) are required for the former
+    and forbidden for the latter -- a transformation record must exactly match what was really
+    done, never claim a resize that didn't happen.
+    """
+
+    operation: Literal["resize_and_strip_metadata", "strip_metadata"]
     source_dimensions: AssetDimensions
     output_dimensions: AssetDimensions
-    maximum_height_px: int = Field(gt=0)
-    resampling: Literal["lanczos"]
+    maximum_height_px: int | None = Field(default=None, gt=0)
+    resampling: Literal["lanczos"] | None = None
     color_space: Literal["sRGB"]
     preserve_aspect_ratio: Literal[True]
     cropped: Literal[False]
@@ -67,7 +75,21 @@ class AssetTransformation(DomainModel):
     artwork_changed: Literal[False]
     layout_changed: Literal[False]
     embedded_metadata_removed: Literal[True]
-    lossless_png_optimization: Literal[True]
+    lossless_png_optimization: bool
+
+    @model_validator(mode="after")
+    def validate_operation_matches_fields(self) -> "AssetTransformation":
+        if self.operation == "resize_and_strip_metadata":
+            if self.maximum_height_px is None or self.resampling is None:
+                raise ValueError(
+                    "resize_and_strip_metadata requires maximum_height_px and resampling"
+                )
+        else:
+            if self.maximum_height_px is not None or self.resampling is not None:
+                raise ValueError("strip_metadata must not claim a resize")
+            if self.source_dimensions != self.output_dimensions:
+                raise ValueError("strip_metadata must not change dimensions")
+        return self
 
 
 class ClientAsset(DomainModel):

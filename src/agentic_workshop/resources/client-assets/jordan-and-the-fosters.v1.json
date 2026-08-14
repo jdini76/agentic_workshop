@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "manifest_revision": 3,
+  "manifest_revision": 4,
   "client_id": "jordan-and-the-fosters",
   "source_reference": "client-assets/jordan-and-the-fosters.v1.json",
   "assets": [
@@ -101,6 +101,128 @@
       "source": {
         "source_type": "local_derivative",
         "description": "Deterministically resized from JATF_Front_Cover.png; embedded metadata removed from derivative only"
+      },
+      "approval_state": "approved",
+      "revision_note": null,
+      "approved_uses": [
+        "content_package_asset_recommendation",
+        "official_website",
+        "social_posts",
+        "email_marketing",
+        "campaign_package_previews",
+        "facebook_page_auto_publish",
+        "website_auto_publish"
+      ],
+      "permitted_transformations": [],
+      "attribution": {
+        "text": null,
+        "required": false,
+        "status": "rights_confirmed_by_ceo"
+      },
+      "restrictions": [
+        "Do not crop, rotate, recolor, or change the aspect ratio",
+        "Do not add, remove, move, or replace text",
+        "Do not change artwork or layout",
+        "Do not overwrite or modify the local original",
+        "Automatic publication is approved only for the Facebook Page and official website, via the reviewed auto-publish pipeline; no other automatic upload, distribution, or external delivery is authorized",
+        "Public use is limited to the approved uses recorded in this manifest",
+        "Casey may recommend this derivative in package metadata only; recommendation is not publication authorization",
+        "Do not silently substitute a website, retailer, or generated image"
+      ]
+    },
+    {
+      "asset_id": "jordan-and-the-fosters-real-jordan-fiona-original",
+      "asset_version": 1,
+      "name": "Real Jordan and Fiona photo collage, original",
+      "description": "CEO-supplied scrapbook-style collage of real photos of the real Jordan and Fiona, from the book's back matter",
+      "asset_type": "photo",
+      "parent_asset_id": null,
+      "parent_asset_version": null,
+      "transformation": null,
+      "repository_path": "assets/clients/jordan-and-the-fosters/originals/jordan-and-the-fosters-real-jordan-fiona-original.png",
+      "file_format": "png",
+      "dimensions": {
+        "width_px": 2000,
+        "height_px": 2000
+      },
+      "file_size_bytes": 1732257,
+      "checksum": {
+        "algorithm": "sha256",
+        "value": "60df1e10cafe777ad5f1ba48bf239143255ad2a5230a3c254428aad228a1726b"
+      },
+      "source": {
+        "source_type": "ceo_supplied_local_file",
+        "description": "Supplied locally by the CEO from the book's print files (Without Text/25.png)"
+      },
+      "approval_state": "approved",
+      "revision_note": null,
+      "approved_uses": [
+        "source_for_approved_derivatives"
+      ],
+      "permitted_transformations": [],
+      "attribution": {
+        "text": null,
+        "required": false,
+        "status": "rights_confirmed_by_ceo"
+      },
+      "restrictions": [
+        "Preserve the original file unchanged",
+        "Do not crop, resize, recolor, rotate, compress, or change the file format",
+        "Do not strip or modify embedded metadata",
+        "Do not embed, upload, publish, distribute, or externally transmit automatically",
+        "Use the approved metadata-clean derivative for marketing instead of this original",
+        "Casey must not recommend the metadata-bearing original",
+        "The file must pass path, type, dimensions, file-size, and checksum validation before recommendation",
+        "Embedded metadata is inventory information only and is not an approved marketing fact",
+        "Any derivative requires its own asset ID, checksum, manifest entry, approval state, uses, restrictions, and provenance",
+        "The CEO confirms full ownership of these photos and authorizes their use for public book marketing"
+      ]
+    },
+    {
+      "asset_id": "jordan-and-the-fosters-real-jordan-fiona",
+      "asset_version": 1,
+      "name": "Real Jordan and Fiona photo collage, marketing derivative",
+      "description": "Approved metadata-stripped marketing derivative of the real Jordan and Fiona photo collage",
+      "asset_type": "photo",
+      "parent_asset_id": "jordan-and-the-fosters-real-jordan-fiona-original",
+      "parent_asset_version": 1,
+      "transformation": {
+        "operation": "strip_metadata",
+        "source_dimensions": {
+          "width_px": 2000,
+          "height_px": 2000
+        },
+        "output_dimensions": {
+          "width_px": 2000,
+          "height_px": 2000
+        },
+        "maximum_height_px": null,
+        "resampling": null,
+        "color_space": "sRGB",
+        "preserve_aspect_ratio": true,
+        "cropped": false,
+        "rotated": false,
+        "recolored": false,
+        "text_changed": false,
+        "artwork_changed": false,
+        "layout_changed": false,
+        "embedded_metadata_removed": true,
+        "lossless_png_optimization": false
+      },
+      "repository_path": "assets/clients/jordan-and-the-fosters/derivatives/jordan-and-the-fosters-real-jordan-fiona.v1.png",
+      "file_format": "png",
+      "dimensions": {
+        "width_px": 2000,
+        "height_px": 2000
+      },
+      "file_size_bytes": 1730758,
+      "checksum": {
+        "algorithm": "sha256",
+        "value": "439607b48aec42bb28605e1f17374e09f252ed805f5004de164c1e0f434da3ea"
+      },
+      "source": {
+        "source_type": "local_derivative",
+        "description": "Metadata stripped from jordan-and-the-fosters-real-jordan-fiona-original.png; no other change"
       },
       "approval_state": "approved",
       "revision_note": null,

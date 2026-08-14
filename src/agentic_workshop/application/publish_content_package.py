@@ -14,7 +14,7 @@ and one destination's failure or missing configuration never blocks the other's 
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -177,7 +177,9 @@ class PublishApprovedContentPackage:
             )
         draft = matches[0]
 
-        image_path = await self._eligible_asset_path(draft, manifest, config.asset_use)
+        image_path = await self._eligible_asset_path(
+            draft, manifest, config.asset_use, package.week
+        )
         if image_path is None:
             return self._write_record(
                 record_path,
@@ -188,7 +190,7 @@ class PublishApprovedContentPackage:
                 status=PublicationStatus.SKIPPED,
                 error_detail=(
                     f"No approved asset carries the {config.asset_use!r} use yet; add it to "
-                    "the cover derivative's approved_uses when ready to publish with an image."
+                    "an approved asset's approved_uses when ready to publish with an image."
                 ),
             )
 
@@ -227,19 +229,27 @@ class PublishApprovedContentPackage:
         )
 
     async def _eligible_asset_path(
-        self, draft: ContentDraft, manifest: ClientAssetManifest, asset_use: str
+        self,
+        draft: ContentDraft,
+        manifest: ClientAssetManifest,
+        asset_use: str,
+        week: date,
     ) -> Path | None:
-        eligible = [
-            recommendation
-            for recommendation in draft.asset_recommendations
-            if recommendation.availability == "available"
-            and asset_use in recommendation.permitted_uses
-        ]
+        eligible = sorted(
+            (
+                recommendation
+                for recommendation in draft.asset_recommendations
+                if recommendation.availability == "available"
+                and asset_use in recommendation.permitted_uses
+            ),
+            key=lambda recommendation: recommendation.asset_id,
+        )
         if not eligible:
             return None
-        matches = [
-            asset for asset in manifest.assets if asset.asset_id == eligible[0].asset_id
-        ]
+        # Deterministic rotation across the eligible pool, keyed by campaign week -- not always
+        # the same asset, but reproducible for a given week rather than randomly chosen.
+        chosen = eligible[week.toordinal() % len(eligible)]
+        matches = [asset for asset in manifest.assets if asset.asset_id == chosen.asset_id]
         if len(matches) != 1:
             return None
         result = await ClientAssetInventory(self._root).validate(matches[0])

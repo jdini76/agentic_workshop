@@ -352,17 +352,17 @@ def test_cli_rejects_draft_and_writes_then_reviews_approved_package(
     package = ContentPackage.model_validate_json(package_path.read_text(encoding="utf-8"))
     assert package.approval_state is BriefApprovalState.DRAFT
     assert package_path.with_suffix(".md").is_file()
-    assert len(package.asset_recommendations) == 1
-    assert all(len(draft.asset_recommendations) == 1 for draft in package.drafts)
+    assert len(package.asset_recommendations) == 2
+    assert all(len(draft.asset_recommendations) == 2 for draft in package.drafts)
     assert all(
-        draft.asset_recommendations[0].asset_id
-        == "jordan-and-the-fosters-front-cover-marketing-1600h"
+        "jordan-and-the-fosters-front-cover-marketing-1600h"
+        in {recommendation.asset_id for recommendation in draft.asset_recommendations}
         for draft in package.drafts
     )
     assert all(
-        "originals/JATF_Front_Cover.png"
-        not in draft.asset_recommendations[0].repository_path
+        "originals/JATF_Front_Cover.png" not in recommendation.repository_path
         for draft in package.drafts
+        for recommendation in draft.asset_recommendations
     )
     assert package.required_assets == ()
     assert all(draft.required_assets == () for draft in package.drafts)
