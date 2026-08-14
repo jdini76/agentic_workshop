@@ -1,5 +1,43 @@
 # Agentic Workshop — Status Log
 
+## 2026-08-13 — Claude Code session — GitHub Actions website deploy live-verified end-to-end
+
+Finished the remaining setup from the previous entry and ran `live-smoke-website-publish` for real
+against the live account. **It worked**, and it happened to exercise the harder of the two code
+paths: the smoke test's content matched what was already live, so `WebsitePublisher` took the
+retry branch — no new commit, force-started a fresh run via `workflow_dispatch`, and correctly
+distinguished it from the prior push-triggered run for the same commit SHA (the `seen_run_ids`
+logic added specifically for this). Confirmed independently, not just via the CLI's clean exit:
+`curl`'d the deployed page and asset directly (matching title, pitch text, author bio, image,
+`Last-Modified` header lined up with deploy timing), and confirmed via the GitHub Actions UI that
+two separate workflow runs exist — one from the direct push, one from the dispatch.
+
+Getting here required real diagnostic work, not just following the plan mechanically:
+
+- **SSH port**: this account's real SSH port is `21098`, not `22` — port `22` timed out entirely
+  (filtered), discovered by testing and cross-checked against Namecheap's known shared-hosting
+  default rather than guessed blind.
+- **cPanel's "Manage SSH Keys" UI showed a key as "authorized" that wasn't actually in
+  `~/.ssh/authorized_keys` on disk** (`cat ~/.ssh/authorized_keys` in cPanel's own terminal returned
+  empty) — the same UI-state-vs-real-filesystem-state drift that caused the original cPanel Git
+  Version Control bug this whole redesign exists to route around. Worked around by generating a
+  dedicated `jatf_deploy_actions` keypair and appending its public half directly to
+  `~/.ssh/authorized_keys` via the terminal, bypassing cPanel's key-management UI entirely.
+  Confirmed full (non-git-shell-restricted) access live: `whoami` → `jordscjd`, `which rsync` →
+  `/usr/bin/rsync`.
+- **Two separate credentials, easy to conflate**: the new `jatf_deploy_actions` SSH keypair (used
+  only by the `SSH_PRIVATE_KEY` GitHub Actions secret, for the rsync deploy step) is distinct from
+  `GITHUB_TOKEN` in this repo's own `.env` (used by `WebsitePublisher`'s Python code to call
+  GitHub's REST API and poll run status) — the latter needed `Actions: read and write` added to its
+  fine-grained PAT scope separately, on top of the `Contents: write` it already had.
+
+`deploy.yml` (in the separate `jatf_website` repo) is updated with the confirmed port (`21098`)
+and committed/pushed to `main`. The GitHub Actions deploy pipeline is now fully live-verified,
+completing the redesign from the previous entry. Only remaining "you do" item from the original
+plan: a real content-package approval through the workspace, to exercise the orchestrator's own
+retry-publish route end-to-end (as opposed to calling the CLI smoke command directly) — not yet
+done, not blocking.
+
 ## 2026-08-12 — Claude Code session — Website deploy replaced: cPanel UAPI → GitHub Actions
 
 The same session's website live-verification (previous entry) surfaced a second, deeper problem:
