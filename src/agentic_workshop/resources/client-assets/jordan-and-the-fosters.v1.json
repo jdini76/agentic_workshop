@@ -109,7 +109,9 @@
         "official_website",
         "social_posts",
         "email_marketing",
-        "campaign_package_previews"
+        "campaign_package_previews",
+        "facebook_page_auto_publish",
+        "website_auto_publish"
       ],
       "permitted_transformations": [],
       "attribution": {
@@ -122,8 +124,7 @@
         "Do not add, remove, move, or replace text",
         "Do not change artwork or layout",
         "Do not overwrite or modify the local original",
-        "Do not automatically publish, upload, distribute, or externally deliver",
-        "Publication requires a separate explicit approval and action",
+        "Automatic publication is approved only for the Facebook Page and official website, via the reviewed auto-publish pipeline; no other automatic upload, distribution, or external delivery is authorized",
         "Public use is limited to the approved uses recorded in this manifest",
         "Casey may recommend this derivative in package metadata only; recommendation is not publication authorization",
         "Do not silently substitute a website, retailer, or generated image"

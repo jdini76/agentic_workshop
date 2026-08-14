@@ -267,6 +267,8 @@ def test_approved_derivative_is_the_only_available_marketing_recommendation() ->
         "social_posts",
         "email_marketing",
         "campaign_package_previews",
+        "facebook_page_auto_publish",
+        "website_auto_publish",
     )
     assert len(recommendations) == 1
     assert recommendations[0].asset_id == derivative.asset_id
@@ -274,12 +276,17 @@ def test_approved_derivative_is_the_only_available_marketing_recommendation() ->
     assert original.asset_id not in {item.asset_id for item in recommendations}
 
 
-def test_approved_derivative_does_not_authorize_publication_or_delivery() -> None:
+def test_approved_derivative_authorizes_publication_only_for_named_destinations() -> None:
     derivative = load_jordan_manifest().assets[1]
 
     assert "automatic_publication" not in derivative.approved_uses
     assert "external_delivery" not in derivative.approved_uses
+    assert set(derivative.approved_uses) & {
+        "facebook_page_auto_publish",
+        "website_auto_publish",
+    } == {"facebook_page_auto_publish", "website_auto_publish"}
     assert any(
-        "separate explicit approval and action" in restriction
+        "Automatic publication is approved only for the Facebook Page and official website"
+        in restriction
         for restriction in derivative.restrictions
     )

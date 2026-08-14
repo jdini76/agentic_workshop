@@ -101,8 +101,11 @@ def render_homepage(
 
   <!-- BEGIN CURRENT PITCH: managed by agentic-workshop; do not hand-edit -->
   <section id="book" class="current-pitch">
-    <h2>{html.escape(pitch_title)}</h2>
-    {_paragraphs_html(pitch_body, approved_destinations)}
+    <img src="{cover_src}" alt="Jordan and the Fosters cover">
+    <div>
+      <h2>{html.escape(pitch_title)}</h2>
+      {_paragraphs_html(pitch_body, approved_destinations)}
+    </div>
   </section>
   <!-- END CURRENT PITCH -->
 
