@@ -95,7 +95,6 @@ class WebsitePublisher(Publisher):
     def __init__(
         self,
         git_runner: GitRunner,
-        http_client: httpx.AsyncClient,
         *,
         working_copy_root: Path,
         github_token: str,
@@ -104,9 +103,10 @@ class WebsitePublisher(Publisher):
         approved_destinations: tuple[str, ...],
         canonical_url: str = DEFAULT_CANONICAL_URL,
         branch: str = DEFAULT_BRANCH,
+        http_timeout_seconds: float = 30.0,
+        http_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._git = git_runner
-        self._http = http_client
         self._working_copy_root = working_copy_root
         self._github_token = github_token
         self._github_repo = github_repo
@@ -114,6 +114,8 @@ class WebsitePublisher(Publisher):
         self._approved_destinations = approved_destinations
         self._canonical_url = canonical_url
         self._branch = branch
+        self._http_timeout_seconds = http_timeout_seconds
+        self._http_transport = http_transport
 
     @classmethod
     def from_environment(
@@ -151,18 +153,8 @@ class WebsitePublisher(Publisher):
         )
         branch = environment_value("GITHUB_BRANCH", local_values) or DEFAULT_BRANCH
 
-        http_client = httpx.AsyncClient(
-            base_url=GITHUB_API_BASE_URL,
-            timeout=timeout_seconds,
-            headers={
-                "Authorization": f"Bearer {github_token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
         return cls(
             SubprocessGitRunner(),
-            http_client,
             working_copy_root=working_copy_root,
             github_token=github_token,
             github_repo=github_repo,
@@ -170,6 +162,25 @@ class WebsitePublisher(Publisher):
             approved_destinations=approved_destinations,
             canonical_url=canonical_url,
             branch=branch,
+            http_timeout_seconds=timeout_seconds,
+        )
+
+    def _new_http_client(self) -> httpx.AsyncClient:
+        # A fresh client per publish() call, not one reused for the adapter's whole lifetime --
+        # httpx.AsyncClient's connection pool is bound to the event loop active when it first
+        # makes a request. A long-lived Publisher instance shared across many independent
+        # asyncio.run() calls (e.g. one per HTTP request in a long-running server) would try to
+        # reuse a pool tied to an already-closed event loop on the second and later calls,
+        # raising "RuntimeError: Event loop is closed" instead of actually reaching GitHub.
+        return httpx.AsyncClient(
+            base_url=GITHUB_API_BASE_URL,
+            timeout=self._http_timeout_seconds,
+            transport=self._http_transport,
+            headers={
+                "Authorization": f"Bearer {self._github_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
         )
 
     async def publish(self, request: PublishRequest) -> PublishResponse:
@@ -200,20 +211,22 @@ class WebsitePublisher(Publisher):
         head = await self._run_git(["rev-parse", "HEAD"])
         commit_sha = head.stdout.strip()
 
-        if pushed_new_commit:
-            # A brand-new commit SHA cannot have any pre-existing workflow runs, so there is
-            # nothing to disambiguate -- the push's own `on: push` trigger creates the run.
-            seen_run_ids: frozenset[int] = frozenset()
-        else:
-            # Nothing new to commit -- this is the retry path: a prior push already succeeded
-            # but its deploy failed, or an operator is deliberately retrying identical content.
-            # `git push` will not happen again, so `on: push` will not fire again either --
-            # force a fresh run instead, snapshotting existing runs for this commit first so
-            # polling can tell the new run apart from any stale prior run for the same SHA.
-            seen_run_ids = await self._existing_run_ids(commit_sha)
-            await self._dispatch_workflow()
+        async with self._new_http_client() as client:
+            if pushed_new_commit:
+                # A brand-new commit SHA cannot have any pre-existing workflow runs, so there is
+                # nothing to disambiguate -- the push's own `on: push` trigger creates the run.
+                seen_run_ids: frozenset[int] = frozenset()
+            else:
+                # Nothing new to commit -- this is the retry path: a prior push already
+                # succeeded but its deploy failed, or an operator is deliberately retrying
+                # identical content. `git push` will not happen again, so `on: push` will not
+                # fire again either -- force a fresh run instead, snapshotting existing runs for
+                # this commit first so polling can tell the new run apart from any stale prior
+                # run for the same SHA.
+                seen_run_ids = await self._existing_run_ids(client, commit_sha)
+                await self._dispatch_workflow(client)
 
-        await self._await_deploy(commit_sha, seen_run_ids=seen_run_ids)
+            await self._await_deploy(client, commit_sha, seen_run_ids=seen_run_ids)
 
         return PublishResponse(
             external_post_id=commit_sha,
@@ -288,9 +301,11 @@ class WebsitePublisher(Publisher):
             )
         return PublisherError(f"git {action} failed: {sanitized}", provider=WEBSITE_PROVIDER)
 
-    async def _await_deploy(self, commit_sha: str, *, seen_run_ids: frozenset[int]) -> None:
+    async def _await_deploy(
+        self, client: httpx.AsyncClient, commit_sha: str, *, seen_run_ids: frozenset[int]
+    ) -> None:
         for _ in range(ACTIONS_POLL_MAX_ATTEMPTS):
-            run = await self._find_new_run(commit_sha, seen_run_ids)
+            run = await self._find_new_run(client, commit_sha, seen_run_ids)
             if run is not None and run.get("status") == "completed":
                 if run.get("conclusion") == "success":
                     return
@@ -306,9 +321,9 @@ class WebsitePublisher(Publisher):
         )
 
     async def _find_new_run(
-        self, commit_sha: str, seen_run_ids: frozenset[int]
+        self, client: httpx.AsyncClient, commit_sha: str, seen_run_ids: frozenset[int]
     ) -> dict[str, Any] | None:
-        runs = await self._list_workflow_runs(commit_sha)
+        runs = await self._list_workflow_runs(client, commit_sha)
         candidates = [
             run
             for run in runs
@@ -316,12 +331,17 @@ class WebsitePublisher(Publisher):
         ]
         return candidates[0] if candidates else None
 
-    async def _existing_run_ids(self, commit_sha: str) -> frozenset[int]:
-        runs = await self._list_workflow_runs(commit_sha)
+    async def _existing_run_ids(
+        self, client: httpx.AsyncClient, commit_sha: str
+    ) -> frozenset[int]:
+        runs = await self._list_workflow_runs(client, commit_sha)
         return frozenset(run["id"] for run in runs if isinstance(run.get("id"), int))
 
-    async def _list_workflow_runs(self, commit_sha: str) -> list[dict[str, Any]]:
+    async def _list_workflow_runs(
+        self, client: httpx.AsyncClient, commit_sha: str
+    ) -> list[dict[str, Any]]:
         response = await self._github_request(
+            client,
             "GET",
             f"/repos/{self._github_repo}/actions/workflows/{GITHUB_WORKFLOW_FILE}/runs",
             params={"head_sha": commit_sha, "per_page": "10"},
@@ -339,8 +359,9 @@ class WebsitePublisher(Publisher):
             )
         return runs
 
-    async def _dispatch_workflow(self) -> None:
+    async def _dispatch_workflow(self, client: httpx.AsyncClient) -> None:
         await self._github_request(
+            client,
             "POST",
             f"/repos/{self._github_repo}/actions/workflows/{GITHUB_WORKFLOW_FILE}/dispatches",
             json_body={"ref": self._branch},
@@ -348,6 +369,7 @@ class WebsitePublisher(Publisher):
 
     async def _github_request(
         self,
+        client: httpx.AsyncClient,
         method: str,
         path: str,
         *,
@@ -355,7 +377,7 @@ class WebsitePublisher(Publisher):
         json_body: dict[str, object] | None = None,
     ) -> httpx.Response:
         try:
-            response = await self._http.request(method, path, params=params, json=json_body)
+            response = await client.request(method, path, params=params, json=json_body)
         except httpx.TimeoutException:
             raise PublisherTimeoutError(
                 "GitHub Actions request timed out", provider=WEBSITE_PROVIDER

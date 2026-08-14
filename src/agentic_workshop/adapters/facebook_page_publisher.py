@@ -44,16 +44,18 @@ class FacebookPagePublisher(Publisher):
 
     def __init__(
         self,
-        client: httpx.AsyncClient,
         *,
         page_id: str,
         access_token: str,
         api_version: str = DEFAULT_GRAPH_API_VERSION,
+        timeout_seconds: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._client = client
         self._page_id = page_id
         self._access_token = access_token
         self._api_version = api_version
+        self._timeout_seconds = timeout_seconds
+        self._transport = transport
 
     @classmethod
     def from_environment(
@@ -78,23 +80,33 @@ class FacebookPagePublisher(Publisher):
             environment_value("FACEBOOK_GRAPH_API_VERSION", local_values)
             or DEFAULT_GRAPH_API_VERSION
         )
-        client = httpx.AsyncClient(
-            base_url=f"https://graph.facebook.com/{api_version}",
-            timeout=timeout_seconds,
-        )
         return cls(
-            client,
             page_id=page_id,
             access_token=access_token,
             api_version=api_version,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _new_client(self) -> httpx.AsyncClient:
+        # A fresh client per publish() call, not one reused for the adapter's whole lifetime --
+        # httpx.AsyncClient's connection pool is bound to the event loop active when it first
+        # makes a request. A long-lived Publisher instance shared across many independent
+        # asyncio.run() calls (e.g. one per HTTP request in a long-running server) would try to
+        # reuse a pool tied to an already-closed event loop on the second and later calls,
+        # raising "RuntimeError: Event loop is closed" instead of actually posting.
+        return httpx.AsyncClient(
+            base_url=f"https://graph.facebook.com/{self._api_version}",
+            timeout=self._timeout_seconds,
+            transport=self._transport,
         )
 
     async def publish(self, request: PublishRequest) -> PublishResponse:
         try:
-            if request.image_path is not None:
-                response = await self._post_photo(request.text, request.image_path)
-            else:
-                response = await self._post_feed(request.text)
+            async with self._new_client() as client:
+                if request.image_path is not None:
+                    response = await self._post_photo(client, request.text, request.image_path)
+                else:
+                    response = await self._post_feed(client, request.text)
         except httpx.TimeoutException:
             raise PublisherTimeoutError(
                 "Facebook request timed out", provider=FACEBOOK_PROVIDER
@@ -127,16 +139,18 @@ class FacebookPagePublisher(Publisher):
             provider_metadata={"provider": FACEBOOK_PROVIDER, "raw_response": payload},
         )
 
-    async def _post_photo(self, caption: str, image_path: Path) -> httpx.Response:
+    async def _post_photo(
+        self, client: httpx.AsyncClient, caption: str, image_path: Path
+    ) -> httpx.Response:
         image_bytes = await asyncio.to_thread(image_path.read_bytes)
-        return await self._client.post(
+        return await client.post(
             f"/{self._page_id}/photos",
             data={"caption": caption, "access_token": self._access_token},
             files={"source": (image_path.name, image_bytes, "image/png")},
         )
 
-    async def _post_feed(self, message: str) -> httpx.Response:
-        return await self._client.post(
+    async def _post_feed(self, client: httpx.AsyncClient, message: str) -> httpx.Response:
+        return await client.post(
             f"/{self._page_id}/feed",
             data={"message": message, "access_token": self._access_token},
         )

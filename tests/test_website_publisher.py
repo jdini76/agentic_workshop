@@ -133,15 +133,14 @@ def _publisher(
     if already_cloned:
         (working_copy_root / ".git").mkdir(exist_ok=True)
     transport = httpx.MockTransport(actions_handler)
-    http_client = httpx.AsyncClient(transport=transport, base_url="https://api.github.com")
     return WebsitePublisher(
         git_runner,
-        http_client,
         working_copy_root=working_copy_root,
         github_token="ghp_supersecret",
         github_repo="owner/repo",
         static_content=_static_content(),
         approved_destinations=("https://www.amazon.com/dp/B0D5BT1XDZ",),
+        http_transport=transport,
     )
 
 

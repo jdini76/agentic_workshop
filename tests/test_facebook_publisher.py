@@ -20,10 +20,7 @@ from agentic_workshop.ports.publishing import (
 
 def _publisher(handler: Callable[[httpx.Request], httpx.Response]) -> FacebookPagePublisher:
     transport = httpx.MockTransport(handler)
-    client = httpx.AsyncClient(
-        transport=transport, base_url="https://graph.facebook.com/v21.0"
-    )
-    return FacebookPagePublisher(client, page_id="page-1", access_token="token-1")
+    return FacebookPagePublisher(page_id="page-1", access_token="token-1", transport=transport)
 
 
 def test_publish_with_image_posts_binary_photo_upload(tmp_path: Path) -> None:
@@ -226,4 +223,4 @@ def test_from_environment_targets_configured_graph_api_version(
     publisher = FacebookPagePublisher.from_environment(load_dotenv=False)
 
     assert publisher._api_version == "v99.0"
-    assert str(publisher._client.base_url) == "https://graph.facebook.com/v99.0/"
+    assert str(publisher._new_client().base_url) == "https://graph.facebook.com/v99.0/"
